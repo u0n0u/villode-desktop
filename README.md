@@ -10,6 +10,7 @@
 - 图形化设置窗口
 - `cover`、`contain`、`stretch` 填充方式
 - 修改设置后自动重载
+- 可在设置中控制登录 Hyprland 后自动运行
 - Hyprland background layer，不遮挡普通窗口
 - 随附 Villode 自有的玻璃风格 HTML 首页
 
@@ -26,6 +27,7 @@ cd villode-desktop
 - 安装 `~/.local/bin/villode-desktop`
 - 安装默认主页到 `~/.local/share/villode-desktop/home/`
 - 写入 `~/.config/hypr/conf.d/villode-desktop.conf`
+- 默认启用登录 Hyprland 后自动运行
 - 绑定 `Super+Shift+D` 开关桌面层
 
 不修改 Hyprland：
@@ -60,6 +62,9 @@ villode-desktop --set-video ~/Videos/wallpaper.mp4 --fit cover
 villode-desktop --set-html ~/Projects/my-desktop/index.html
 villode-desktop --set-html https://example.com
 villode-desktop --status
+villode-desktop --enable-autostart
+villode-desktop --disable-autostart
+villode-desktop --autostart-status
 
 villode-desktop --daemon
 villode-desktop --toggle

@@ -89,19 +89,18 @@ EOF
 
   mkdir -p "$HYPR_DIR"
   touch "$HYPR_MAIN"
-  if grep -Eq 'source *=.*villode-desktop\.conf' "$HYPR_MAIN"; then
-    return
+  sed -i \
+    -e '/^[[:space:]]*\$desktop[[:space:]]*=[[:space:]]*villode-desktop[[:space:]]*$/d' \
+    -e '/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*villode-desktop --daemon[[:space:]]*$/d' \
+    -e '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*\$mod SHIFT, D, exec, \$desktop --toggle[[:space:]]*$/d' \
+    "$HYPR_MAIN"
+  if ! grep -Eq 'source *=.*villode-desktop\.conf' "$HYPR_MAIN"; then
+    {
+      echo
+      echo "# Villode Desktop"
+      echo "source = ~/.config/hypr/conf.d/villode-desktop.conf"
+    } >> "$HYPR_MAIN"
   fi
-  if grep -Eq 'villode-desktop --daemon|\$desktop *= *villode-desktop|villode-desktop --toggle' "$HYPR_MAIN"; then
-    echo "Hyprland already contains Villode Desktop entries; not appending a source line."
-    echo "Fresh Desktop config was still written to: $HYPR_INCLUDE"
-    return
-  fi
-  {
-    echo
-    echo "# Villode Desktop"
-    echo "source = ~/.config/hypr/conf.d/villode-desktop.conf"
-  } >> "$HYPR_MAIN"
 }
 
 if [ ! -x "$SOURCE_BIN" ]; then
