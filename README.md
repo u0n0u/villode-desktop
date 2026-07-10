@@ -93,10 +93,6 @@ sudo apt install python3 python3-gi python3-cairo \
   gstreamer1.0-plugins-bad
 ```
 
-## 授权素材说明
-
-本仓库只包含 Villode 自有的默认主页与背景图，不包含本机使用的 InternalBeyond 页面或 Sui 授权素材。
-
 ## 卸载
 
 ```bash
