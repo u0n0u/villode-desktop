@@ -1,0 +1,64 @@
+Villode Desktop Non-Commercial Attribution License
+
+Copyright (c) 2026 Villode
+
+This license applies to the Villode Desktop project, including source code,
+scripts, documentation, images, and other files in this repository, unless a
+specific file states otherwise.
+
+1. Permission
+
+You may use, read, copy, modify, and redistribute this project or modified
+versions of it for personal, educational, research, and other non-commercial
+purposes.
+
+2. Attribution
+
+When redistributing this project or modified versions of it, you must clearly
+credit the original author:
+
+  Author: Villode
+  Project: Villode Desktop
+  Repository: https://github.com/Villode/villode-desktop
+
+If you modify the project, you must clearly state that your version has been
+modified and must not imply that the modified version is the official original
+project unless Villode has explicitly approved it.
+
+3. Non-Commercial Restriction
+
+Commercial use is not allowed without prior written permission from Villode.
+
+Commercial use includes, but is not limited to:
+
+- selling this project or modified versions of it;
+- including it in paid products, paid services, or commercial distributions;
+- using it to provide paid hosting, paid integration, paid support, or paid
+  deployment services;
+- using it in advertising-supported or revenue-generating products or services;
+- using the project name, screenshots, interface, or code for commercial
+  promotion without permission.
+
+To request commercial permission, contact Villode through the GitHub repository.
+
+4. No Warranty
+
+This project is provided "as is", without warranty of any kind. Villode is not
+responsible for any damage, data loss, system issue, business loss, or other
+consequence caused by using, modifying, distributing, or relying on this
+project.
+
+5. Reserved Rights
+
+All rights not explicitly granted by this license are reserved by Villode.
+
+6. Interpretation
+
+To the maximum extent permitted by applicable law, the final interpretation of
+this license belongs to Villode.
+
+7. Language
+
+If there is any conflict between translations or explanations of this license,
+this English license text is the controlling version unless Villode publishes a
+newer official license file in this repository.

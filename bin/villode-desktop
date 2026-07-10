@@ -1,0 +1,706 @@
+#!/usr/bin/env python3
+import argparse
+import html
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+
+APP_ID = "local.villode.desktop"
+TITLE = "Villode Desktop"
+DATA_DIR = Path.home() / ".local" / "share" / "villode-desktop"
+DEFAULT_HTML = DATA_DIR / "home" / "index.html"
+CONFIG_DIR = Path.home() / ".config" / "villode-desktop"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+PID_FILE = Path.home() / ".cache" / "villode-desktop.pid"
+MODES = ("static", "video", "html")
+FITS = ("cover", "contain", "stretch")
+DEFAULT_CONFIG = {
+    "version": 1,
+    "mode": "html",
+    "source": str(DEFAULT_HTML),
+    "fit": "cover",
+    "background": "#101522",
+}
+ACTION_COMMANDS = {
+    "launcher": ["villode-launcher"],
+    "terminal": ["alacritty"],
+    "files": ["nautilus"],
+    "browser": ["google-chrome-stable"],
+    "settings": [str(Path(__file__).resolve()), "--configure"],
+}
+
+
+def read_pid():
+    try:
+        return int(PID_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def process_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_text(errors="ignore")
+    except FileNotFoundError:
+        return False
+    return "villode-desktop" in cmdline
+
+
+def stop_running():
+    pid = read_pid()
+    if not process_alive(pid):
+        PID_FILE.unlink(missing_ok=True)
+        return False
+
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(30):
+        if not process_alive(pid):
+            PID_FILE.unlink(missing_ok=True)
+            return True
+        time.sleep(0.05)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    PID_FILE.unlink(missing_ok=True)
+    return True
+
+
+def normalize_background(value):
+    value = str(value or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", value):
+        return value
+    return DEFAULT_CONFIG["background"]
+
+
+def load_config():
+    config = dict(DEFAULT_CONFIG)
+    try:
+        saved = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        saved = {}
+    if isinstance(saved, dict):
+        for key in DEFAULT_CONFIG:
+            if key in saved:
+                config[key] = saved[key]
+    if config["mode"] not in MODES:
+        config["mode"] = DEFAULT_CONFIG["mode"]
+    if config["fit"] not in FITS:
+        config["fit"] = DEFAULT_CONFIG["fit"]
+    config["source"] = str(config.get("source") or "")
+    config["background"] = normalize_background(config.get("background"))
+    config["version"] = 1
+    return config
+
+
+def save_config(config):
+    clean = {
+        "version": 1,
+        "mode": config["mode"],
+        "source": str(config["source"]),
+        "fit": config["fit"],
+        "background": normalize_background(config.get("background")),
+    }
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = CONFIG_FILE.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(clean, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(CONFIG_FILE)
+
+
+def is_web_uri(source):
+    return source.startswith(("http://", "https://"))
+
+
+def local_source_path(source):
+    if source.startswith("file://"):
+        return Path(unquote(urlparse(source).path))
+    if is_web_uri(source):
+        return None
+    return Path(source).expanduser().resolve()
+
+
+def normalize_uri(source):
+    if source.startswith(("http://", "https://", "file://")):
+        return source
+    return Path(source).expanduser().resolve().as_uri()
+
+
+def validate_config(config):
+    mode = config.get("mode")
+    source = str(config.get("source") or "").strip()
+    if mode not in MODES:
+        return "不支持的桌面模式。"
+    if not source:
+        return "请选择或输入内容来源。"
+    if mode == "static" and is_web_uri(source):
+        return "静态图片模式请选择本地图片。"
+    path = local_source_path(source)
+    if path is not None and not path.is_file():
+        return f"找不到文件：{path}"
+    return None
+
+
+def spawn_desktop(args=None):
+    command = [str(Path(__file__).resolve()), "--run"]
+    if args is not None:
+        if getattr(args, "url", None):
+            command.extend(("--url", args.url))
+        if getattr(args, "escape_quits", False):
+            command.append("--escape-quits")
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def restart_desktop(args=None):
+    stop_running()
+    spawn_desktop(args)
+
+
+def set_if_supported(obj, name, value):
+    try:
+        obj.set_property(name, value)
+    except Exception:
+        pass
+
+
+def launch_command(command):
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def build_video_document(config):
+    source = html.escape(normalize_uri(config["source"]), quote=True)
+    fit = "fill" if config["fit"] == "stretch" else config["fit"]
+    background = normalize_background(config.get("background"))
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body {{ width: 100%; height: 100%; margin: 0; overflow: hidden; background: {background}; }}
+    video {{ width: 100%; height: 100%; display: block; object-fit: {fit}; background: {background}; }}
+    #error {{ display: none; position: fixed; inset: 0; place-items: center; color: #dce7f8;
+      background: {background}; font: 16px system-ui, sans-serif; }}
+  </style>
+</head>
+<body>
+  <video id="wallpaper" src="{source}" autoplay muted loop playsinline preload="auto"
+    disablepictureinpicture disableremoteplayback></video>
+  <div id="error">无法播放当前视频，请打开 Villode Desktop 设置更换文件。</div>
+  <script>
+    const video = document.getElementById("wallpaper");
+    const error = document.getElementById("error");
+    video.muted = true;
+    video.play().catch(() => {{}});
+    video.addEventListener("error", () => {{ error.style.display = "grid"; }});
+    document.addEventListener("visibilitychange", () => {{
+      if (document.hidden) video.pause();
+      else video.play().catch(() => {{}});
+    }});
+  </script>
+</body>
+</html>"""
+
+
+def run_configurator():
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+
+    config = load_config()
+    dialog = Gtk.Dialog(title="Villode Desktop 设置")
+    dialog.set_default_size(680, 300)
+    dialog.set_resizable(False)
+    dialog.add_button("取消", Gtk.ResponseType.CANCEL)
+    dialog.add_button("保存并应用", Gtk.ResponseType.APPLY)
+    dialog.set_default_response(Gtk.ResponseType.APPLY)
+
+    content = dialog.get_content_area()
+    content.set_border_width(20)
+    content.set_spacing(14)
+
+    title = Gtk.Label()
+    title.set_markup("<span size='x-large' weight='bold'>桌面背景</span>")
+    title.set_xalign(0)
+    content.pack_start(title, False, False, 0)
+
+    subtitle = Gtk.Label(
+        label="静态图片使用原生绘制；视频使用硬件加速的 WebKit/GStreamer；HTML 可选择本地文件或输入网址。"
+    )
+    subtitle.set_xalign(0)
+    subtitle.set_line_wrap(True)
+    content.pack_start(subtitle, False, False, 0)
+
+    grid = Gtk.Grid(column_spacing=12, row_spacing=12)
+    content.pack_start(grid, True, True, 0)
+
+    def field_label(text, row):
+        label = Gtk.Label(label=text)
+        label.set_xalign(1)
+        grid.attach(label, 0, row, 1, 1)
+
+    field_label("类型", 0)
+    mode_combo = Gtk.ComboBoxText()
+    mode_combo.append("static", "静态图片")
+    mode_combo.append("video", "循环视频")
+    mode_combo.append("html", "自定义 HTML / 网址")
+    mode_combo.set_active_id(config["mode"])
+    grid.attach(mode_combo, 1, 0, 2, 1)
+
+    field_label("来源", 1)
+    source_entry = Gtk.Entry()
+    source_entry.set_hexpand(True)
+    source_entry.set_text(config["source"])
+    grid.attach(source_entry, 1, 1, 1, 1)
+    browse_button = Gtk.Button(label="浏览…")
+    grid.attach(browse_button, 2, 1, 1, 1)
+
+    field_label("填充方式", 2)
+    fit_combo = Gtk.ComboBoxText()
+    fit_combo.append("cover", "覆盖屏幕（可能裁剪）")
+    fit_combo.append("contain", "完整显示（可能留边）")
+    fit_combo.append("stretch", "拉伸填满")
+    fit_combo.set_active_id(config["fit"])
+    grid.attach(fit_combo, 1, 2, 2, 1)
+
+    field_label("背景色", 3)
+    background_entry = Gtk.Entry()
+    background_entry.set_text(config["background"])
+    background_entry.set_max_length(9)
+    grid.attach(background_entry, 1, 3, 2, 1)
+
+    hint = Gtk.Label()
+    hint.set_xalign(0)
+    hint.set_line_wrap(True)
+    grid.attach(hint, 1, 4, 2, 1)
+
+    def update_mode_ui(*_args):
+        mode = mode_combo.get_active_id()
+        fit_combo.set_sensitive(mode != "html")
+        if mode == "static":
+            source_entry.set_placeholder_text("选择 PNG、JPG、WEBP 等图片")
+            hint.set_text("静态模式不会启动 WebKit，功耗最低。")
+        elif mode == "video":
+            source_entry.set_placeholder_text("选择 MP4、WEBM、MKV 等视频")
+            hint.set_text("视频会自动静音并循环播放，推荐 1080p / 24 FPS / H.264。")
+        else:
+            source_entry.set_placeholder_text("选择 .html 文件，或输入 https:// 网址")
+            hint.set_text("本地 HTML 可以自己编写；它仍会运行在独立 WebKit 进程中。")
+
+    def browse_source(_button):
+        mode = mode_combo.get_active_id()
+        chooser = Gtk.FileChooserDialog(
+            title="选择桌面内容",
+            parent=dialog,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        chooser.add_buttons(
+            "取消",
+            Gtk.ResponseType.CANCEL,
+            "选择",
+            Gtk.ResponseType.OK,
+        )
+        media_filter = Gtk.FileFilter()
+        if mode == "static":
+            media_filter.set_name("图片")
+            patterns = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp", "*.gif")
+        elif mode == "video":
+            media_filter.set_name("视频")
+            patterns = ("*.mp4", "*.webm", "*.mkv", "*.mov", "*.m4v", "*.avi")
+        else:
+            media_filter.set_name("HTML")
+            patterns = ("*.html", "*.htm")
+        for pattern in patterns:
+            media_filter.add_pattern(pattern)
+            media_filter.add_pattern(pattern.upper())
+        chooser.add_filter(media_filter)
+        all_filter = Gtk.FileFilter()
+        all_filter.set_name("所有文件")
+        all_filter.add_pattern("*")
+        chooser.add_filter(all_filter)
+        current = local_source_path(source_entry.get_text().strip())
+        if current is not None:
+            if current.is_file():
+                chooser.set_filename(str(current))
+            elif current.parent.is_dir():
+                chooser.set_current_folder(str(current.parent))
+        if chooser.run() == Gtk.ResponseType.OK:
+            source_entry.set_text(chooser.get_filename())
+        chooser.destroy()
+
+    mode_combo.connect("changed", update_mode_ui)
+    browse_button.connect("clicked", browse_source)
+    update_mode_ui()
+    dialog.show_all()
+
+    selected = None
+    while True:
+        response = dialog.run()
+        if response != Gtk.ResponseType.APPLY:
+            break
+        candidate = {
+            "version": 1,
+            "mode": mode_combo.get_active_id(),
+            "source": source_entry.get_text().strip(),
+            "fit": fit_combo.get_active_id() or "cover",
+            "background": normalize_background(background_entry.get_text()),
+        }
+        error = validate_config(candidate)
+        if error:
+            message = Gtk.MessageDialog(
+                transient_for=dialog,
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.CLOSE,
+                text="无法保存设置",
+            )
+            message.format_secondary_text(error)
+            message.run()
+            message.destroy()
+            continue
+        selected = candidate
+        break
+
+    was_running = process_alive(read_pid())
+    dialog.destroy()
+    if selected is not None:
+        save_config(selected)
+        if was_running:
+            restart_desktop()
+    return 0
+
+
+def run_desktop(args):
+    import gi
+
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("GdkPixbuf", "2.0")
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("GtkLayerShell", "0.1")
+    gi.require_version("WebKit2", "4.1")
+
+    from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, GtkLayerShell, WebKit2
+
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    old_pid = read_pid()
+    if process_alive(old_pid) and old_pid != os.getpid():
+        return 0
+    PID_FILE.write_text(str(os.getpid()))
+
+    config = load_config()
+    if args.url:
+        config.update({"mode": "html", "source": args.url})
+
+    class StaticBackground(Gtk.DrawingArea):
+        def __init__(self, source, fit, background):
+            super().__init__()
+            path = local_source_path(source)
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(path))
+            try:
+                pixbuf = pixbuf.apply_embedded_orientation()
+            except Exception:
+                pass
+            self.pixbuf = pixbuf
+            self.fit = fit
+            self.background = Gdk.RGBA()
+            if not self.background.parse(normalize_background(background)):
+                self.background.parse(DEFAULT_CONFIG["background"])
+            self.set_hexpand(True)
+            self.set_vexpand(True)
+            self.connect("draw", self.on_draw)
+
+        def on_draw(self, widget, cr):
+            allocation = widget.get_allocation()
+            width = max(1, allocation.width)
+            height = max(1, allocation.height)
+            image_width = max(1, self.pixbuf.get_width())
+            image_height = max(1, self.pixbuf.get_height())
+
+            cr.set_source_rgba(
+                self.background.red,
+                self.background.green,
+                self.background.blue,
+                self.background.alpha,
+            )
+            cr.paint()
+
+            if self.fit == "stretch":
+                scale_x = width / image_width
+                scale_y = height / image_height
+            else:
+                scale = min(width / image_width, height / image_height)
+                if self.fit == "cover":
+                    scale = max(width / image_width, height / image_height)
+                scale_x = scale_y = scale
+            drawn_width = image_width * scale_x
+            drawn_height = image_height * scale_y
+            offset_x = (width - drawn_width) / 2
+            offset_y = (height - drawn_height) / 2
+
+            cr.save()
+            cr.rectangle(0, 0, width, height)
+            cr.clip()
+            cr.translate(offset_x, offset_y)
+            cr.scale(scale_x, scale_y)
+            Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
+            cr.paint()
+            cr.restore()
+            return False
+
+    def error_widget(message):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.CENTER)
+        label = Gtk.Label()
+        label.set_markup(
+            "<span size='x-large' weight='bold'>Villode Desktop</span>\n\n"
+            + html.escape(message)
+            + "\n\n运行 villode-desktop --configure 更换内容。"
+        )
+        label.set_justify(Gtk.Justification.CENTER)
+        box.pack_start(label, False, False, 0)
+        return box
+
+    class DesktopApp(Gtk.Application):
+        def __init__(self):
+            super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
+            self.window = None
+            self.webview = None
+            self.content = None
+
+        def make_webview(self):
+            manager = WebKit2.UserContentManager()
+            webview = WebKit2.WebView.new_with_user_content_manager(manager)
+            settings = webview.get_settings()
+            set_if_supported(settings, "enable-developer-extras", True)
+            set_if_supported(settings, "enable-smooth-scrolling", True)
+            set_if_supported(settings, "allow-file-access-from-file-urls", True)
+            set_if_supported(settings, "allow-universal-access-from-file-urls", True)
+            set_if_supported(settings, "javascript-can-access-clipboard", True)
+            set_if_supported(settings, "media-playback-requires-user-gesture", False)
+            try:
+                settings.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.ALWAYS)
+            except Exception:
+                pass
+            webview.connect("decide-policy", self.on_decide_policy)
+            webview.connect("context-menu", lambda *_args: True)
+            return webview
+
+        def build_content(self):
+            error = validate_config(config)
+            if error:
+                return error_widget(error)
+            try:
+                if config["mode"] == "static":
+                    return StaticBackground(config["source"], config["fit"], config["background"])
+                webview = self.make_webview()
+                self.webview = webview
+                if config["mode"] == "video":
+                    source_path = local_source_path(config["source"])
+                    base_uri = None
+                    if source_path is not None:
+                        base_uri = source_path.parent.as_uri() + "/"
+                    webview.load_html(build_video_document(config), base_uri)
+                else:
+                    webview.load_uri(normalize_uri(config["source"]))
+                return webview
+            except Exception as exc:
+                return error_widget(str(exc))
+
+        def do_activate(self):
+            if self.window:
+                self.window.present()
+                return
+
+            window = Gtk.ApplicationWindow(application=self)
+            window.set_title(f"{TITLE} — {config['mode']}")
+            window.set_name("villode-desktop-window")
+            window.set_decorated(False)
+            window.set_resizable(True)
+            window.set_skip_taskbar_hint(True)
+            window.set_skip_pager_hint(True)
+            window.set_accept_focus(True)
+            window.set_keep_below(True)
+            window.set_type_hint(Gdk.WindowTypeHint.DESKTOP)
+
+            GtkLayerShell.init_for_window(window)
+            GtkLayerShell.set_namespace(window, "villode-desktop")
+            GtkLayerShell.set_layer(window, GtkLayerShell.Layer.BACKGROUND)
+            GtkLayerShell.set_keyboard_mode(window, GtkLayerShell.KeyboardMode.ON_DEMAND)
+            for edge in (
+                GtkLayerShell.Edge.TOP,
+                GtkLayerShell.Edge.RIGHT,
+                GtkLayerShell.Edge.BOTTOM,
+                GtkLayerShell.Edge.LEFT,
+            ):
+                GtkLayerShell.set_anchor(window, edge, True)
+                GtkLayerShell.set_margin(window, edge, 0)
+            GtkLayerShell.set_exclusive_zone(window, -1)
+
+            self.content = self.build_content()
+            window.add(self.content)
+            window.connect("key-press-event", self.on_key_press)
+            window.connect("destroy", lambda *_: self.quit())
+            window.show_all()
+            self.window = window
+
+        def on_key_press(self, _window, event):
+            key = Gdk.keyval_name(event.keyval) or ""
+            ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+            if key == "F5" or (ctrl and key.lower() == "r"):
+                if self.webview:
+                    self.webview.reload()
+                elif self.content:
+                    self.content.queue_draw()
+                return True
+            if ctrl and key == ",":
+                launch_command(ACTION_COMMANDS["settings"])
+                return True
+            if (ctrl and key.lower() == "q") or (args.escape_quits and key == "Escape"):
+                self.quit()
+                return True
+            return False
+
+        def on_decide_policy(self, _webview, decision, decision_type):
+            if decision_type != WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
+                return False
+            action = decision.get_navigation_action()
+            request = action.get_request() if action else None
+            target_uri = request.get_uri() if request else ""
+            if not target_uri.startswith("villode-action://"):
+                return False
+
+            decision.ignore()
+            name = urlparse(target_uri).netloc or urlparse(target_uri).path.lstrip("/")
+            if name == "reload":
+                self.webview.reload()
+            elif name == "quit":
+                self.quit()
+            elif name in ACTION_COMMANDS:
+                launch_command(ACTION_COMMANDS[name])
+            return True
+
+    app = DesktopApp()
+
+    def request_quit(*_args):
+        app.quit()
+        return False
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, request_quit)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, request_quit)
+
+    try:
+        return app.run([])
+    finally:
+        if read_pid() == os.getpid():
+            PID_FILE.unlink(missing_ok=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Villode Hyprland desktop background manager")
+    parser.add_argument("--run", action="store_true", help="run the desktop layer in this process")
+    parser.add_argument("--daemon", action="store_true", help="start the configured desktop layer")
+    parser.add_argument("--toggle", action="store_true", help="toggle the desktop layer")
+    parser.add_argument("--reload", action="store_true", help="restart and reload the desktop layer")
+    parser.add_argument("--quit", action="store_true", help="stop the desktop layer")
+    parser.add_argument("--configure", "--settings", action="store_true", help="open graphical settings")
+    parser.add_argument("--status", action="store_true", help="show the saved configuration and process state")
+    parser.add_argument("--url", help="compatibility override: render this local HTML file or URL")
+    source_group = parser.add_mutually_exclusive_group()
+    source_group.add_argument("--set-static", metavar="PATH", help="select a static image")
+    source_group.add_argument("--set-video", metavar="PATH", help="select a looping video")
+    source_group.add_argument("--set-html", metavar="PATH_OR_URL", help="select custom HTML or a URL")
+    parser.add_argument("--fit", choices=FITS, help="image/video fit mode")
+    parser.add_argument("--background", metavar="#RRGGBB", help="background color")
+    parser.add_argument("--escape-quits", action="store_true", help="let Escape close the desktop layer")
+    args = parser.parse_args()
+
+    if args.configure:
+        return run_configurator()
+    if args.status:
+        payload = load_config()
+        payload["running"] = process_alive(read_pid())
+        payload["pid"] = read_pid() if payload["running"] else None
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    selected = None
+    if args.set_static:
+        selected = ("static", args.set_static)
+    elif args.set_video:
+        selected = ("video", args.set_video)
+    elif args.set_html:
+        selected = ("html", args.set_html)
+    if selected or args.fit or args.background:
+        config = load_config()
+        if selected:
+            config["mode"], config["source"] = selected
+        if args.fit:
+            config["fit"] = args.fit
+        if args.background:
+            config["background"] = normalize_background(args.background)
+        error = validate_config(config)
+        if error:
+            print(error, file=sys.stderr)
+            return 2
+        was_running = process_alive(read_pid())
+        save_config(config)
+        if was_running:
+            restart_desktop()
+        print(f"已设置 {config['mode']} 桌面：{config['source']}")
+        return 0
+
+    if args.quit:
+        stop_running()
+        return 0
+    if args.reload:
+        restart_desktop(args)
+        return 0
+    if args.toggle:
+        if not stop_running():
+            spawn_desktop(args)
+        return 0
+    if args.daemon:
+        if not process_alive(read_pid()):
+            spawn_desktop(args)
+        return 0
+    if args.run:
+        return run_desktop(args)
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
