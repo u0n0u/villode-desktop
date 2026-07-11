@@ -1,19 +1,20 @@
 # Villode Desktop
 
-一个运行在 Hyprland background layer 中的桌面背景管理器，支持静态图片、循环视频和自定义 HTML/网址。
+一个面向 Hyprland 的桌面背景管理器，支持静态图片、循环视频和自定义 HTML/网址。
 
 ## 功能
 
-- 静态图片由 GTK 原生绘制，不启动 WebKit，空闲功耗最低
+- 静态图片委托 Caelestia 统一渲染，不额外创建 Desktop layer
 - 视频自动静音、循环播放，通过 WebKitGTK/GStreamer 解码
-- 自定义本地 HTML 或 `http://`、`https://` 页面
+- 自定义本地 HTML 或 `http://`、`https://` 页面，远程页面默认禁止文件、剪贴板和本地快捷动作权限
 - 图形化设置窗口
 - `cover`、`contain`、`stretch` 填充方式
 - 修改设置后自动重载
 - 可在设置中控制登录 Hyprland 后自动运行
-- Hyprland background layer，不遮挡普通窗口
+- 视频和 HTML 使用 Hyprland background layer，不遮挡普通窗口
 - 默认使用低功耗的 Villode Midnight Glass 静态壁纸
 - HTML 桌面仍可在设置中按需选择本地文件或网址
+- 静态、视频和 HTML 的上次来源分别保存，切换类型时会自动恢复
 
 ## 安装
 
@@ -82,10 +83,12 @@ villode-desktop --quit
 
 ## 依赖
 
+静态壁纸由 Caelestia Shell 统一显示，因此请先安装 Villode Caelestia；统一安装器会自动按正确顺序部署。
+
 Arch:
 
 ```bash
-sudo pacman -S --needed python python-gobject python-cairo gtk3 \
+sudo pacman -S --needed python python-gobject gtk3 \
   gtk-layer-shell webkit2gtk-4.1 gstreamer gst-libav gst-plugins-bad \
   gst-plugins-ugly gst-plugin-va
 ```
@@ -93,7 +96,7 @@ sudo pacman -S --needed python python-gobject python-cairo gtk3 \
 Debian/Ubuntu:
 
 ```bash
-sudo apt install python3 python3-gi python3-cairo \
+sudo apt install python3 python3-gi \
   gir1.2-gtk-3.0 gir1.2-gtk-layer-shell-0.1 gir1.2-webkit2-4.1 \
   gstreamer1.0-libav gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad

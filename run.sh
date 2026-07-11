@@ -11,4 +11,6 @@ mkdir -p "$INSTALL_HOME/assets"
 install -m 644 "$SOURCE_HOME/index.html" "$INSTALL_HOME/index.html"
 install -m 644 "$SOURCE_HOME/assets/villode-glass-bg.png" \
   "$INSTALL_HOME/assets/villode-glass-bg.png"
+install -m 644 "$SOURCE_HOME/assets/villode-midnight-glass.png" \
+  "$INSTALL_HOME/assets/villode-midnight-glass.png"
 "$BIN" --reload

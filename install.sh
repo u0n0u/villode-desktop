@@ -44,31 +44,29 @@ need_cmd() {
 
 check_deps() {
   python3 - <<'PY' >/dev/null 2>&1
-import cairo
 import gi
 gi.require_version("Gdk", "3.0")
-gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gio", "2.0")
 gi.require_version("Gtk", "3.0")
 gi.require_version("GtkLayerShell", "0.1")
 gi.require_version("WebKit2", "4.1")
-from gi.repository import Gdk, GdkPixbuf, Gio, Gtk, GtkLayerShell, WebKit2
+from gi.repository import Gdk, Gio, Gtk, GtkLayerShell, WebKit2
 PY
 }
 
 install_deps() {
   if need_cmd pacman; then
-    sudo pacman -S --needed python python-gobject python-cairo gtk3 \
+    sudo pacman -S --needed python python-gobject gtk3 \
       gtk-layer-shell webkit2gtk-4.1 gstreamer gst-libav gst-plugins-bad \
       gst-plugins-ugly gst-plugin-va
   elif need_cmd apt; then
     sudo apt update
-    sudo apt install -y python3 python3-gi python3-cairo \
+    sudo apt install -y python3 python3-gi \
       gir1.2-gtk-3.0 gir1.2-gtk-layer-shell-0.1 gir1.2-webkit2-4.1 \
       gstreamer1.0-libav gstreamer1.0-plugins-good \
       gstreamer1.0-plugins-bad
   elif need_cmd dnf; then
-    sudo dnf install -y python3 python3-gobject python3-cairo gtk3 \
+    sudo dnf install -y python3 python3-gobject gtk3 \
       gtk-layer-shell webkit2gtk4.1 gstreamer1-plugins-good \
       gstreamer1-plugins-bad-free gstreamer1-libav
   else
@@ -110,6 +108,11 @@ fi
 if [ ! -f "$SOURCE_HOME/index.html" ]; then
   echo "Missing default home: $SOURCE_HOME/index.html" >&2
   exit 1
+fi
+if ! need_cmd caelestia && [ ! -x "$HOME/.local/bin/caelestia" ]; then
+  echo "Villode Desktop 的静态壁纸模式需要 Caelestia Shell。" >&2
+  echo "请先安装 Villode Caelestia，或使用统一安装器。" >&2
+  exit 69
 fi
 
 if ! check_deps; then

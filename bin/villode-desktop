@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import html
 import json
 import os
@@ -7,7 +8,9 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -19,7 +22,10 @@ DEFAULT_HTML = DATA_DIR / "home" / "index.html"
 DEFAULT_WALLPAPER = DATA_DIR / "home" / "assets" / "villode-midnight-glass.png"
 CONFIG_DIR = Path.home() / ".config" / "villode-desktop"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+CONFIG_LOCK_FILE = CONFIG_DIR / "config.lock"
 PID_FILE = Path.home() / ".cache" / "villode-desktop.pid"
+PID_LOCK_FILE = Path.home() / ".cache" / "villode-desktop.instance.lock"
+OPERATION_LOCK_FILE = Path.home() / ".cache" / "villode-desktop.operation.lock"
 HYPR_DIR = Path.home() / ".config" / "hypr"
 HYPR_MAIN = HYPR_DIR / "hyprland.conf"
 HYPR_INCLUDE_DIR = HYPR_DIR / "conf.d"
@@ -34,9 +40,14 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi"}
 HTML_SUFFIXES = {".html", ".htm"}
 DEFAULT_CONFIG = {
-    "version": 1,
+    "version": 2,
     "mode": "static",
     "source": str(DEFAULT_WALLPAPER),
+    "sources": {
+        "static": str(DEFAULT_WALLPAPER),
+        "video": "",
+        "html": str(DEFAULT_HTML),
+    },
     "fit": "cover",
     "background": "#101522",
 }
@@ -52,7 +63,7 @@ ACTION_COMMANDS = {
 def read_pid():
     try:
         return int(PID_FILE.read_text().strip())
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError, OSError):
         return None
 
 
@@ -68,18 +79,80 @@ def process_alive(pid):
 
     try:
         cmdline = Path(f"/proc/{pid}/cmdline").read_text(errors="ignore")
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         return False
     return "villode-desktop" in cmdline
 
 
-def stop_running():
+@contextmanager
+def exclusive_lock(path, blocking=True):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    os.fchmod(handle.fileno(), 0o600)
+    flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+    try:
+        fcntl.flock(handle.fileno(), flags)
+    except BlockingIOError:
+        handle.close()
+        yield None
+        return
+    try:
+        yield handle
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def acquire_instance_lock():
+    PID_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handle = PID_LOCK_FILE.open("a+")
+    os.fchmod(handle.fileno(), 0o600)
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def release_instance_lock(handle):
+    if handle is None:
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+
+
+def write_text_atomic(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_pid(pid):
+    write_text_atomic(PID_FILE, f"{pid}\n")
+
+
+def _stop_running():
     pid = read_pid()
     if not process_alive(pid):
         PID_FILE.unlink(missing_ok=True)
         return False
 
-    os.kill(pid, signal.SIGTERM)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        PID_FILE.unlink(missing_ok=True)
+        return False
     for _ in range(30):
         if not process_alive(pid):
             PID_FILE.unlink(missing_ok=True)
@@ -94,6 +167,11 @@ def stop_running():
     return True
 
 
+def stop_running():
+    with exclusive_lock(OPERATION_LOCK_FILE):
+        return _stop_running()
+
+
 def normalize_background(value):
     value = str(value or "").strip()
     if re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", value):
@@ -102,40 +180,70 @@ def normalize_background(value):
 
 
 def load_config():
-    config = dict(DEFAULT_CONFIG)
-    try:
-        saved = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        saved = {}
+    config = {
+        **DEFAULT_CONFIG,
+        "sources": dict(DEFAULT_CONFIG["sources"]),
+    }
+    with exclusive_lock(CONFIG_LOCK_FILE):
+        try:
+            saved = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            saved = {}
     if isinstance(saved, dict):
-        for key in DEFAULT_CONFIG:
+        for key in ("mode", "source", "fit", "background"):
             if key in saved:
                 config[key] = saved[key]
+        saved_sources = saved.get("sources")
+        if isinstance(saved_sources, dict):
+            for mode in MODES:
+                if isinstance(saved_sources.get(mode), str):
+                    config["sources"][mode] = saved_sources[mode]
     if config["mode"] not in MODES:
         config["mode"] = DEFAULT_CONFIG["mode"]
     if config["fit"] not in FITS:
         config["fit"] = DEFAULT_CONFIG["fit"]
-    config["source"] = str(config.get("source") or "")
+    legacy_source = (
+        str(saved.get("source") or "") if isinstance(saved, dict) else ""
+    )
+    # Keep the long-standing top-level field authoritative for compatibility
+    # with settings integrations which only update mode/source.
+    if legacy_source:
+        config["sources"][config["mode"]] = legacy_source
+    config["sources"] = {
+        mode: str(config["sources"].get(mode) or "") for mode in MODES
+    }
+    if not config["sources"]["static"]:
+        config["sources"]["static"] = str(DEFAULT_WALLPAPER)
+    config["source"] = config["sources"][config["mode"]]
     config["background"] = normalize_background(config.get("background"))
-    config["version"] = 1
+    config["version"] = 2
     return config
 
 
 def save_config(config):
+    mode = config["mode"]
+    sources = dict(DEFAULT_CONFIG["sources"])
+    supplied_sources = config.get("sources")
+    if isinstance(supplied_sources, dict):
+        for source_mode in MODES:
+            if isinstance(supplied_sources.get(source_mode), str):
+                sources[source_mode] = supplied_sources[source_mode]
+    sources[mode] = str(config.get("source") or "")
     clean = {
-        "version": 1,
-        "mode": config["mode"],
-        "source": str(config["source"]),
+        "version": 2,
+        "mode": mode,
+        "source": sources[mode],
+        "sources": {source_mode: sources[source_mode] for source_mode in MODES},
         "fit": config["fit"],
         "background": normalize_background(config.get("background")),
     }
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = CONFIG_FILE.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(clean, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(CONFIG_FILE)
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    CONFIG_DIR.chmod(0o700)
+    with exclusive_lock(CONFIG_LOCK_FILE):
+        write_text_atomic(
+            CONFIG_FILE,
+            json.dumps(clean, ensure_ascii=False, indent=2) + "\n",
+        )
 
 
 def active_config_line(path, expected):
@@ -150,13 +258,6 @@ def autostart_enabled():
     return active_config_line(
         HYPR_INCLUDE, HYPR_AUTOSTART_LINE
     ) or active_config_line(HYPR_MAIN, HYPR_AUTOSTART_LINE)
-
-
-def write_text_atomic(path, content):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    os.replace(temporary, path)
 
 
 def set_autostart(enabled):
@@ -223,6 +324,16 @@ def normalize_uri(source):
     return Path(source).expanduser().resolve().as_uri()
 
 
+def is_trusted_home_uri(uri):
+    if not isinstance(uri, str) or not uri.startswith("file://"):
+        return False
+    try:
+        path = Path(unquote(urlparse(uri).path)).resolve()
+        return path == DEFAULT_HTML.resolve()
+    except (OSError, ValueError):
+        return False
+
+
 def validate_config(config):
     mode = config.get("mode")
     source = str(config.get("source") or "").strip()
@@ -246,25 +357,108 @@ def validate_config(config):
     return None
 
 
-def spawn_desktop(args=None):
+def apply_static_wallpaper(source):
+    path = local_source_path(str(source))
+    if path is None:
+        return False, "Caelestia 静态壁纸必须是本地文件。"
+    try:
+        result = subprocess.run(
+            ["caelestia", "wallpaper", "-f", str(path)],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return False, f"无法调用 Caelestia 设置壁纸：{error}"
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout).strip()
+        return False, message or f"Caelestia 退出码：{result.returncode}"
+    return True, ""
+
+
+def _spawn_desktop(args=None):
     command = [str(Path(__file__).resolve()), "--run"]
     if args is not None:
         if getattr(args, "url", None):
             command.extend(("--url", args.url))
         if getattr(args, "escape_quits", False):
             command.append("--escape-quits")
-    subprocess.Popen(
+    return subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        close_fds=True,
     )
 
 
-def restart_desktop(args=None):
-    stop_running()
-    spawn_desktop(args)
+def wait_for_registration(process, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pid = read_pid()
+        if process_alive(pid):
+            return pid
+        if process.poll() is not None:
+            return None
+        time.sleep(0.025)
+    return read_pid() if process_alive(read_pid()) else None
+
+
+def ensure_desktop_started(args=None):
+    with exclusive_lock(OPERATION_LOCK_FILE):
+        pid = read_pid()
+        if process_alive(pid):
+            return pid
+        PID_FILE.unlink(missing_ok=True)
+        process = _spawn_desktop(args)
+        return wait_for_registration(process)
+
+
+def restart_desktop(args=None, config=None):
+    effective = config or load_config()
+    if args is not None and getattr(args, "url", None):
+        effective = {
+            **effective,
+            "mode": "html",
+            "source": args.url,
+        }
+    with exclusive_lock(OPERATION_LOCK_FILE):
+        _stop_running()
+        if effective["mode"] == "static":
+            return apply_static_wallpaper(effective["source"])
+        process = _spawn_desktop(args)
+        pid = wait_for_registration(process)
+        if pid is None:
+            return False, "Villode Desktop 进程未能启动。"
+        return True, ""
+
+
+def apply_saved_config(config, start_non_static):
+    if config["mode"] == "static":
+        success, message = apply_static_wallpaper(config["source"])
+        if success:
+            stop_running()
+        return success, message
+    if start_non_static:
+        return restart_desktop(config=config)
+    return True, ""
+
+
+def toggle_desktop(args=None):
+    config = load_config()
+    with exclusive_lock(OPERATION_LOCK_FILE):
+        if process_alive(read_pid()):
+            _stop_running()
+            return True, ""
+        if config["mode"] == "static":
+            return apply_static_wallpaper(config["source"])
+        process = _spawn_desktop(args)
+        if wait_for_registration(process) is None:
+            return False, "Villode Desktop 进程未能启动。"
+        return True, ""
 
 
 def set_if_supported(obj, name, value):
@@ -343,7 +537,7 @@ def run_configurator():
     content.pack_start(title, False, False, 0)
 
     subtitle = Gtk.Label(
-        label="静态图片使用原生绘制；视频使用硬件加速的 WebKit/GStreamer；HTML 可选择本地文件或输入网址。"
+        label="静态图片交给 Caelestia 统一显示；视频使用硬件加速的 WebKit/GStreamer；HTML 可选择本地文件或输入网址。"
     )
     subtitle.set_xalign(0)
     subtitle.set_line_wrap(True)
@@ -398,7 +592,8 @@ def run_configurator():
     grid.attach(hint, 1, 5, 2, 1)
 
     last_mode = mode_combo.get_active_id()
-    mode_sources = {last_mode: source_entry.get_text()}
+    mode_sources = dict(config["sources"])
+    mode_sources[last_mode] = source_entry.get_text()
 
     def update_mode_ui(*_args):
         nonlocal last_mode
@@ -407,10 +602,11 @@ def run_configurator():
             mode_sources[last_mode] = source_entry.get_text()
             source_entry.set_text(mode_sources.get(mode, ""))
             last_mode = mode
-        fit_combo.set_sensitive(mode != "html")
+        fit_combo.set_sensitive(mode == "video")
+        background_entry.set_sensitive(mode == "video")
         if mode == "static":
             source_entry.set_placeholder_text("选择 PNG、JPG、WEBP 等图片")
-            hint.set_text("静态模式不会启动 WebKit，功耗最低。")
+            hint.set_text("静态模式由 Caelestia 显示，不会额外创建桌面图层。")
         elif mode == "video":
             source_entry.set_placeholder_text("选择 MP4、WEBM、MKV 等视频")
             hint.set_text("视频会自动静音并循环播放，推荐 1080p / 24 FPS / H.264。")
@@ -466,9 +662,13 @@ def run_configurator():
         if response != Gtk.ResponseType.APPLY:
             break
         candidate = {
-            "version": 1,
+            "version": 2,
             "mode": mode_combo.get_active_id(),
             "source": source_entry.get_text().strip(),
+            "sources": {
+                **mode_sources,
+                mode_combo.get_active_id(): source_entry.get_text().strip(),
+            },
             "fit": fit_combo.get_active_id() or "cover",
             "background": normalize_background(background_entry.get_text()),
         }
@@ -488,92 +688,42 @@ def run_configurator():
         selected = candidate
         break
 
-    was_running = process_alive(read_pid())
     dialog.destroy()
     if selected is not None:
         save_config(selected)
         set_autostart(autostart_check.get_active())
-        if was_running:
-            restart_desktop()
+        success, message = apply_saved_config(selected, True)
+        if not success:
+            print(f"应用桌面设置失败：{message}", file=sys.stderr)
+            return 1
     return 0
 
 
 def run_desktop(args):
+    config = load_config()
+    if args.url:
+        config.update({"mode": "html", "source": args.url})
+    if config["mode"] == "static":
+        success, message = apply_static_wallpaper(config["source"])
+        if not success:
+            print(message, file=sys.stderr)
+            return 1
+        return 0
+
+    instance_lock = acquire_instance_lock()
+    if instance_lock is None:
+        return 0
+
     import gi
 
     gi.require_version("Gdk", "3.0")
-    gi.require_version("GdkPixbuf", "2.0")
     gi.require_version("Gtk", "3.0")
     gi.require_version("GtkLayerShell", "0.1")
     gi.require_version("WebKit2", "4.1")
 
-    from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, GtkLayerShell, WebKit2
+    from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell, WebKit2
 
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    old_pid = read_pid()
-    if process_alive(old_pid) and old_pid != os.getpid():
-        return 0
-    PID_FILE.write_text(str(os.getpid()))
-
-    config = load_config()
-    if args.url:
-        config.update({"mode": "html", "source": args.url})
-
-    class StaticBackground(Gtk.DrawingArea):
-        def __init__(self, source, fit, background):
-            super().__init__()
-            path = local_source_path(source)
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(path))
-            try:
-                pixbuf = pixbuf.apply_embedded_orientation()
-            except Exception:
-                pass
-            self.pixbuf = pixbuf
-            self.fit = fit
-            self.background = Gdk.RGBA()
-            if not self.background.parse(normalize_background(background)):
-                self.background.parse(DEFAULT_CONFIG["background"])
-            self.set_hexpand(True)
-            self.set_vexpand(True)
-            self.connect("draw", self.on_draw)
-
-        def on_draw(self, widget, cr):
-            allocation = widget.get_allocation()
-            width = max(1, allocation.width)
-            height = max(1, allocation.height)
-            image_width = max(1, self.pixbuf.get_width())
-            image_height = max(1, self.pixbuf.get_height())
-
-            cr.set_source_rgba(
-                self.background.red,
-                self.background.green,
-                self.background.blue,
-                self.background.alpha,
-            )
-            cr.paint()
-
-            if self.fit == "stretch":
-                scale_x = width / image_width
-                scale_y = height / image_height
-            else:
-                scale = min(width / image_width, height / image_height)
-                if self.fit == "cover":
-                    scale = max(width / image_width, height / image_height)
-                scale_x = scale_y = scale
-            drawn_width = image_width * scale_x
-            drawn_height = image_height * scale_y
-            offset_x = (width - drawn_width) / 2
-            offset_y = (height - drawn_height) / 2
-
-            cr.save()
-            cr.rectangle(0, 0, width, height)
-            cr.clip()
-            cr.translate(offset_x, offset_y)
-            cr.scale(scale_x, scale_y)
-            Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
-            cr.paint()
-            cr.restore()
-            return False
+    write_pid(os.getpid())
 
     def error_widget(message):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -596,40 +746,66 @@ def run_desktop(args):
             self.webview = None
             self.content = None
 
-        def make_webview(self):
+        def make_webview(self, local_file_access=False, trusted_actions=False):
             manager = WebKit2.UserContentManager()
             webview = WebKit2.WebView.new_with_user_content_manager(manager)
+            self.trusted_actions = bool(trusted_actions)
+            self.remote_html = config["mode"] == "html" and is_web_uri(config["source"])
             settings = webview.get_settings()
-            set_if_supported(settings, "enable-developer-extras", True)
+            set_if_supported(settings, "enable-developer-extras", False)
             set_if_supported(settings, "enable-smooth-scrolling", True)
-            set_if_supported(settings, "allow-file-access-from-file-urls", True)
-            set_if_supported(settings, "allow-universal-access-from-file-urls", True)
-            set_if_supported(settings, "javascript-can-access-clipboard", True)
+            set_if_supported(
+                settings, "allow-file-access-from-file-urls", bool(local_file_access)
+            )
+            set_if_supported(settings, "allow-universal-access-from-file-urls", False)
+            set_if_supported(settings, "javascript-can-access-clipboard", False)
+            set_if_supported(settings, "allow-modal-dialogs", False)
             set_if_supported(settings, "media-playback-requires-user-gesture", False)
             try:
                 settings.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.ALWAYS)
             except Exception:
                 pass
             webview.connect("decide-policy", self.on_decide_policy)
+            webview.connect("permission-request", self.on_permission_request)
+            webview.connect("create", lambda *_args: None)
             webview.connect("context-menu", lambda *_args: True)
             return webview
+
+        def source_is_trusted_home(self):
+            if config["mode"] != "html" or is_web_uri(config["source"]):
+                return False
+            path = local_source_path(config["source"])
+            if path is None:
+                return False
+            try:
+                return path.resolve() == DEFAULT_HTML.resolve()
+            except OSError:
+                return False
+
+        def on_permission_request(self, _webview, request):
+            request.deny()
+            return True
 
         def build_content(self):
             error = validate_config(config)
             if error:
                 return error_widget(error)
             try:
-                if config["mode"] == "static":
-                    return StaticBackground(config["source"], config["fit"], config["background"])
-                webview = self.make_webview()
-                self.webview = webview
                 if config["mode"] == "video":
+                    webview = self.make_webview(local_file_access=True)
+                    self.webview = webview
                     source_path = local_source_path(config["source"])
                     base_uri = None
                     if source_path is not None:
                         base_uri = source_path.parent.as_uri() + "/"
                     webview.load_html(build_video_document(config), base_uri)
                 else:
+                    local_html = not is_web_uri(config["source"])
+                    webview = self.make_webview(
+                        local_file_access=local_html,
+                        trusted_actions=self.source_is_trusted_home(),
+                    )
+                    self.webview = webview
                     webview.load_uri(normalize_uri(config["source"]))
                 return webview
             except Exception as exc:
@@ -690,15 +866,30 @@ def run_desktop(args):
             return False
 
         def on_decide_policy(self, _webview, decision, decision_type):
+            if decision_type == WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION:
+                decision.ignore()
+                return True
             if decision_type != WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
                 return False
             action = decision.get_navigation_action()
             request = action.get_request() if action else None
             target_uri = request.get_uri() if request else ""
+            parsed = urlparse(target_uri)
+            scheme = parsed.scheme.casefold()
+            if self.remote_html and scheme not in {"http", "https", "about"}:
+                decision.ignore()
+                return True
             if not target_uri.startswith("villode-action://"):
                 return False
 
             decision.ignore()
+            user_gesture = bool(action and action.is_user_gesture())
+            if not (
+                self.trusted_actions
+                and user_gesture
+                and is_trusted_home_uri(_webview.get_uri())
+            ):
+                return True
             name = urlparse(target_uri).netloc or urlparse(target_uri).path.lstrip("/")
             if name == "reload":
                 self.webview.reload()
@@ -722,6 +913,7 @@ def run_desktop(args):
     finally:
         if read_pid() == os.getpid():
             PID_FILE.unlink(missing_ok=True)
+        release_instance_lock(instance_lock)
 
 
 def main():
@@ -763,8 +955,15 @@ def main():
         return run_configurator()
     if args.enable_autostart:
         set_autostart(True)
-        if not process_alive(read_pid()):
-            spawn_desktop(args)
+        config = load_config()
+        if config["mode"] == "static":
+            success, message = apply_saved_config(config, False)
+        else:
+            success = ensure_desktop_started(args) is not None
+            message = "" if success else "Villode Desktop 进程未能启动。"
+        if not success:
+            print(message, file=sys.stderr)
+            return 1
         print("已启用 Villode Desktop 登录后自动运行。")
         return 0
     if args.disable_autostart:
@@ -803,8 +1002,12 @@ def main():
             return 2
         was_running = process_alive(read_pid())
         save_config(config)
-        if was_running:
-            restart_desktop()
+        success, message = apply_saved_config(
+            config, was_running or selected is not None
+        )
+        if not success:
+            print(f"应用桌面设置失败：{message}", file=sys.stderr)
+            return 1
         print(f"已设置 {config['mode']} 桌面：{config['source']}")
         return 0
 
@@ -812,15 +1015,27 @@ def main():
         stop_running()
         return 0
     if args.reload:
-        restart_desktop(args)
+        success, message = restart_desktop(args)
+        if not success:
+            print(message, file=sys.stderr)
+            return 1
         return 0
     if args.toggle:
-        if not stop_running():
-            spawn_desktop(args)
+        success, message = toggle_desktop(args)
+        if not success:
+            print(message, file=sys.stderr)
+            return 1
         return 0
     if args.daemon:
-        if not process_alive(read_pid()):
-            spawn_desktop(args)
+        config = load_config()
+        if config["mode"] == "static":
+            success, message = apply_saved_config(config, False)
+        else:
+            success = ensure_desktop_started(args) is not None
+            message = "" if success else "Villode Desktop 进程未能启动。"
+        if not success:
+            print(message, file=sys.stderr)
+            return 1
         return 0
     if args.run:
         return run_desktop(args)
