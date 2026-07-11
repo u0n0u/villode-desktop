@@ -12,7 +12,8 @@
 - 修改设置后自动重载
 - 可在设置中控制登录 Hyprland 后自动运行
 - Hyprland background layer，不遮挡普通窗口
-- 随附 Villode 自有的玻璃风格 HTML 首页
+- 默认使用低功耗的 Villode Midnight Glass 静态壁纸
+- HTML 桌面仍可在设置中按需选择本地文件或网址
 
 ## 安装
 

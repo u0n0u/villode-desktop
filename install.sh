@@ -127,6 +127,8 @@ install -m 755 "$SOURCE_BIN" "$INSTALL_BIN"
 install -m 644 "$SOURCE_HOME/index.html" "$INSTALL_HOME/index.html"
 install -m 644 "$SOURCE_HOME/assets/villode-glass-bg.png" \
   "$INSTALL_HOME/assets/villode-glass-bg.png"
+install -m 644 "$SOURCE_HOME/assets/villode-midnight-glass.png" \
+  "$INSTALL_HOME/assets/villode-midnight-glass.png"
 python3 -m py_compile "$INSTALL_BIN"
 
 if [ "$SETUP_HYPRLAND" -eq 1 ]; then
@@ -141,7 +143,7 @@ if [ "$START_DESKTOP" -eq 1 ]; then
 fi
 
 echo "Installed: $INSTALL_BIN"
-echo "Default home: $INSTALL_HOME/index.html"
+echo "Default wallpaper: $INSTALL_HOME/assets/villode-midnight-glass.png"
 if [ "$SETUP_HYPRLAND" -eq 1 ]; then
   echo "Hyprland config: $HYPR_INCLUDE"
 fi

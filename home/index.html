@@ -727,48 +727,6 @@
       display: none;
     }
 
-    .dock {
-      position: fixed;
-      left: 50%;
-      bottom: clamp(26px, 4vh, 48px);
-      z-index: 7;
-      transform: translateX(-50%);
-      justify-self: center;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px;
-      border-radius: 30px;
-    }
-
-    .dock a {
-      width: 54px;
-      height: 54px;
-      border-radius: 20px;
-      border: 1px solid var(--line-soft);
-      display: grid;
-      place-items: center;
-      text-decoration: none;
-      background: rgba(255,255,255,0.08);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
-      transition: transform 260ms cubic-bezier(.2,.8,.2,1), background 220ms ease, border-color 220ms ease;
-    }
-
-    .dock a:hover {
-      transform: translateY(-8px) scale(1.08);
-      background: rgba(255,255,255,0.15);
-      border-color: var(--line);
-    }
-
-    .dock a:active {
-      transform: translateY(-2px) scale(1);
-    }
-
-    .dock span {
-      font-size: 20px;
-      line-height: 1;
-    }
-
     .status-row {
       display: none;
       grid-template-columns: repeat(3, 1fr);
@@ -965,11 +923,6 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
-      .dock a {
-        width: 48px;
-        height: 48px;
-        border-radius: 18px;
-      }
     }
   </style>
 </head>
@@ -1052,13 +1005,6 @@
         </aside>
       </section>
 
-      <nav class="surface dock" aria-label="Dock">
-        <a href="villode-action://launcher" title="启动器"><span>⌘</span></a>
-        <a href="villode-action://terminal" title="终端"><span>›_</span></a>
-        <a href="villode-action://files" title="文件"><span>□</span></a>
-        <a href="villode-action://browser" title="浏览器"><span>◎</span></a>
-        <a href="villode-action://reload" title="刷新"><span>↻</span></a>
-      </nav>
     </section>
 
     <section class="intro" id="intro" tabindex="0" aria-label="进入桌面">

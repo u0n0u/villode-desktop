@@ -16,6 +16,7 @@ APP_ID = "local.villode.desktop"
 TITLE = "Villode Desktop"
 DATA_DIR = Path.home() / ".local" / "share" / "villode-desktop"
 DEFAULT_HTML = DATA_DIR / "home" / "index.html"
+DEFAULT_WALLPAPER = DATA_DIR / "home" / "assets" / "villode-midnight-glass.png"
 CONFIG_DIR = Path.home() / ".config" / "villode-desktop"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 PID_FILE = Path.home() / ".cache" / "villode-desktop.pid"
@@ -29,10 +30,13 @@ HYPR_AUTOSTART_LINE = "exec-once = villode-desktop --daemon"
 HYPR_BIND_LINE = "bind = $mod SHIFT, D, exec, $desktop --toggle"
 MODES = ("static", "video", "html")
 FITS = ("cover", "contain", "stretch")
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+VIDEO_SUFFIXES = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi"}
+HTML_SUFFIXES = {".html", ".htm"}
 DEFAULT_CONFIG = {
     "version": 1,
-    "mode": "html",
-    "source": str(DEFAULT_HTML),
+    "mode": "static",
+    "source": str(DEFAULT_WALLPAPER),
     "fit": "cover",
     "background": "#101522",
 }
@@ -231,6 +235,14 @@ def validate_config(config):
     path = local_source_path(source)
     if path is not None and not path.is_file():
         return f"找不到文件：{path}"
+    if path is not None:
+        suffix = path.suffix.casefold()
+        if mode == "static" and suffix not in IMAGE_SUFFIXES:
+            return "静态图片模式只支持 PNG、JPG、WEBP、BMP 或 GIF 文件。"
+        if mode == "video" and suffix not in VIDEO_SUFFIXES:
+            return "循环视频模式只支持 MP4、WEBM、MKV、MOV、M4V 或 AVI 文件。"
+        if mode == "html" and suffix not in HTML_SUFFIXES:
+            return "本地 HTML 模式只支持 HTML 或 HTM 文件。"
     return None
 
 
@@ -385,8 +397,16 @@ def run_configurator():
     hint.set_line_wrap(True)
     grid.attach(hint, 1, 5, 2, 1)
 
+    last_mode = mode_combo.get_active_id()
+    mode_sources = {last_mode: source_entry.get_text()}
+
     def update_mode_ui(*_args):
+        nonlocal last_mode
         mode = mode_combo.get_active_id()
+        if mode != last_mode:
+            mode_sources[last_mode] = source_entry.get_text()
+            source_entry.set_text(mode_sources.get(mode, ""))
+            last_mode = mode
         fit_combo.set_sensitive(mode != "html")
         if mode == "static":
             source_entry.set_placeholder_text("选择 PNG、JPG、WEBP 等图片")
@@ -425,10 +445,6 @@ def run_configurator():
             media_filter.add_pattern(pattern)
             media_filter.add_pattern(pattern.upper())
         chooser.add_filter(media_filter)
-        all_filter = Gtk.FileFilter()
-        all_filter.set_name("所有文件")
-        all_filter.add_pattern("*")
-        chooser.add_filter(all_filter)
         current = local_source_path(source_entry.get_text().strip())
         if current is not None:
             if current.is_file():
