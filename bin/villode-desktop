@@ -22,6 +22,7 @@ DEFAULT_HTML = DATA_DIR / "home" / "index.html"
 DEFAULT_WALLPAPER = DATA_DIR / "home" / "assets" / "villode-midnight-glass.png"
 CONFIG_DIR = Path.home() / ".config" / "villode-desktop"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+CAELESTIA_CONFIG_FILE = Path.home() / ".config" / "caelestia" / "shell.json"
 CONFIG_LOCK_FILE = CONFIG_DIR / "config.lock"
 PID_FILE = Path.home() / ".cache" / "villode-desktop.pid"
 PID_LOCK_FILE = Path.home() / ".cache" / "villode-desktop.instance.lock"
@@ -748,6 +749,24 @@ def run_desktop(args):
 
         def make_webview(self, local_file_access=False, trusted_actions=False):
             manager = WebKit2.UserContentManager()
+            try:
+                shell_config = json.loads(CAELESTIA_CONFIG_FILE.read_text())
+                weather_location = str(
+                    shell_config.get("services", {}).get("weatherLocation", "")
+                ).strip()
+            except (FileNotFoundError, OSError, ValueError, TypeError):
+                weather_location = ""
+            manager.add_script(
+                WebKit2.UserScript.new(
+                    "window.__VILLODE_WEATHER_LOCATION__ = "
+                    + json.dumps(weather_location, ensure_ascii=False)
+                    + ";",
+                    WebKit2.UserContentInjectedFrames.TOP_FRAME,
+                    WebKit2.UserScriptInjectionTime.START,
+                    None,
+                    None,
+                )
+            )
             webview = WebKit2.WebView.new_with_user_content_manager(manager)
             self.trusted_actions = bool(trusted_actions)
             self.remote_html = config["mode"] == "html" and is_web_uri(config["source"])

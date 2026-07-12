@@ -128,10 +128,21 @@ fi
 mkdir -p "$(dirname "$INSTALL_BIN")" "$INSTALL_HOME/assets"
 install -m 755 "$SOURCE_BIN" "$INSTALL_BIN"
 install -m 644 "$SOURCE_HOME/index.html" "$INSTALL_HOME/index.html"
+install -m 644 "$SOURCE_HOME/minimal.html" "$INSTALL_HOME/minimal.html"
+install -m 644 "$SOURCE_HOME/weather.html" "$INSTALL_HOME/weather.html"
+install -m 644 "$SOURCE_HOME/dashboard.html" "$INSTALL_HOME/dashboard.html"
 install -m 644 "$SOURCE_HOME/assets/villode-glass-bg.png" \
   "$INSTALL_HOME/assets/villode-glass-bg.png"
 install -m 644 "$SOURCE_HOME/assets/villode-midnight-glass.png" \
   "$INSTALL_HOME/assets/villode-midnight-glass.png"
+install -m 644 "$SOURCE_HOME/assets/weather-rain-glass.png" \
+  "$INSTALL_HOME/assets/weather-rain-glass.png"
+install -m 644 "$SOURCE_HOME/assets/weather-clear-sky.mp4" \
+  "$INSTALL_HOME/assets/weather-clear-sky.mp4"
+install -m 644 "$SOURCE_HOME/assets/219415_small.mp4" \
+  "$INSTALL_HOME/assets/219415_small.mp4"
+ln -sfn "$HOME/.config/caelestia/shell.json" \
+  "$INSTALL_HOME/assets/caelestia-shell.json"
 python3 -m py_compile "$INSTALL_BIN"
 
 if [ "$SETUP_HYPRLAND" -eq 1 ]; then

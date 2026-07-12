@@ -14,6 +14,7 @@
 - 视频和 HTML 使用 Hyprland background layer，不遮挡普通窗口
 - 默认使用低功耗的 Villode Midnight Glass 静态壁纸
 - HTML 桌面仍可在设置中按需选择本地文件或网址
+- 内置极简、天气和信息看板页面；天气页可跟随 Caelestia 的位置设置
 - 静态、视频和 HTML 的上次来源分别保存，切换类型时会自动恢复
 
 ## 安装

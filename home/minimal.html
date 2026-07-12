@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Villode · Minimal</title>
+  <style>
+    :root {
+      --safe-left: clamp(56px, 4.5vw, 76px);
+      --safe-bottom: clamp(78px, 10vh, 118px);
+      --safe-right: clamp(20px, 2.5vw, 40px);
+      --safe-top: clamp(16px, 2.2vh, 32px);
+      --text: rgba(244, 248, 252, 0.94);
+      --muted: rgba(210, 222, 236, 0.62);
+      --soft: rgba(190, 206, 224, 0.42);
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+        "Helvetica Neue", "Inter", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0b0e11;
+      color: var(--text);
+      font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+      cursor: default;
+    }
+
+    .wallpaper {
+      position: fixed;
+      inset: 0;
+      background:
+        url("assets/villode-midnight-glass.png") center / cover no-repeat,
+        #0b0e11;
+    }
+
+    .edge {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(5, 8, 12, 0.22) 0, transparent var(--safe-left)),
+        linear-gradient(0deg, rgba(4, 7, 12, 0.18) 0, transparent var(--safe-bottom));
+    }
+
+    .stage {
+      position: fixed;
+      left: var(--safe-left);
+      right: var(--safe-right);
+      top: var(--safe-top);
+      bottom: var(--safe-bottom);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+
+    .mark {
+      text-align: center;
+      opacity: 0;
+      transform: translateY(8px);
+      animation: in 900ms cubic-bezier(0.22, 1, 0.36, 1) 120ms forwards;
+    }
+
+    .time {
+      font-size: clamp(64px, 9vw, 112px);
+      font-weight: 200;
+      letter-spacing: -0.045em;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 28px rgba(0, 0, 0, 0.35);
+    }
+
+    .date {
+      margin-top: clamp(10px, 1.4vw, 16px);
+      font-size: clamp(15px, 1.5vw, 18px);
+      font-weight: 400;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      text-shadow: 0 1px 14px rgba(0, 0, 0, 0.4);
+    }
+
+    .sub {
+      margin-top: 10px;
+      font-size: 12px;
+      font-weight: 450;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--soft);
+      text-shadow: 0 1px 10px rgba(0, 0, 0, 0.35);
+    }
+
+    .switcher {
+      position: fixed;
+      left: calc(var(--safe-left) + 18px);
+      bottom: calc(var(--safe-bottom) + 14px);
+      z-index: 20;
+      display: flex;
+      gap: 6px;
+      padding: 4px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      pointer-events: auto;
+    }
+
+    .switcher a {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.28);
+      text-indent: -999px;
+      overflow: hidden;
+    }
+
+    .switcher a[aria-current="page"] {
+      background: rgba(255, 255, 255, 0.85);
+    }
+
+    @keyframes in {
+      to { opacity: 1; transform: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mark { animation: none; opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wallpaper" aria-hidden="true"></div>
+  <div class="edge" aria-hidden="true"></div>
+
+  <main class="stage" aria-label="桌面时钟">
+    <div class="mark">
+      <div class="time" id="time">--:--</div>
+      <div class="date" id="date">—</div>
+      <div class="sub">Villode</div>
+    </div>
+  </main>
+
+  <nav class="switcher" aria-label="桌面主题">
+    <a href="weather.html" title="天气">1</a>
+    <a href="dashboard.html" title="看板">2</a>
+    <a href="minimal.html" aria-current="page" title="极简">3</a>
+  </nav>
+
+  <script>
+    (function () {
+      var timeEl = document.getElementById("time");
+      var dateEl = document.getElementById("date");
+
+      function pad(n) {
+        return n < 10 ? "0" + n : String(n);
+      }
+
+      function tick() {
+        var now = new Date();
+        timeEl.textContent = pad(now.getHours()) + ":" + pad(now.getMinutes());
+        dateEl.textContent = now.toLocaleDateString("zh-CN", {
+          month: "long",
+          day: "numeric",
+          weekday: "long"
+        });
+        setTimeout(tick, 1000 - (now.getMilliseconds() % 1000));
+      }
+
+      tick();
+    })();
+  </script>
+</body>
+</html>

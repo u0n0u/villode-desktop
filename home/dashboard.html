@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Villode · Dashboard</title>
+  <style>
+    :root {
+      --safe-left: clamp(56px, 4.5vw, 78px);
+      --safe-bottom: clamp(78px, 10vh, 118px);
+      --safe-right: clamp(16px, 2vw, 28px);
+      --safe-top: clamp(14px, 2vh, 28px);
+      --tile: rgba(18, 22, 28, 0.55);
+      --tile-2: rgba(22, 28, 36, 0.48);
+      --line: rgba(255, 255, 255, 0.08);
+      --text: rgba(238, 242, 246, 0.92);
+      --muted: rgba(190, 200, 210, 0.55);
+      --soft: rgba(170, 182, 194, 0.4);
+      --accent: #9ec0d8;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
+        "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0a0e12;
+      color: var(--text);
+      font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    .bg {
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 50% 40%, rgba(40, 60, 80, 0.35), transparent 70%),
+        url("assets/villode-midnight-glass.png") center / cover no-repeat;
+      filter: brightness(0.55) saturate(0.75) blur(0.5px);
+      transform: scale(1.04);
+    }
+
+    .bg::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: rgba(6, 10, 14, 0.42);
+    }
+
+    .shell {
+      position: fixed;
+      left: var(--safe-left);
+      right: var(--safe-right);
+      top: var(--safe-top);
+      bottom: var(--safe-bottom);
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr);
+      gap: 14px;
+      padding: 8px;
+    }
+
+    /* Left icon rail — like ref */
+    .rail {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      padding-top: 52px;
+    }
+
+    .rail button {
+      width: 36px;
+      height: 36px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: rgba(220, 228, 236, 0.45);
+      display: grid;
+      place-items: center;
+      cursor: default;
+    }
+
+    .rail button.active,
+    .rail button:hover {
+      color: rgba(240, 246, 250, 0.9);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .rail svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .time {
+      font-size: clamp(28px, 3vw, 36px);
+      font-weight: 300;
+      letter-spacing: -0.03em;
+      padding: 2px 4px 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .grid {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1.15fr 1fr 1fr;
+      grid-template-rows: 1.15fr 0.95fr 0.95fr;
+      gap: 8px;
+    }
+
+    .tile {
+      background: var(--tile);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px 13px;
+      min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .tile.soft { background: var(--tile-2); }
+
+    .tile h3 {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    /* Span helpers */
+    .span-2 { grid-column: span 1; }
+    .weather-big { grid-row: span 1; }
+
+    .clock-date {
+      font-size: 12px;
+      color: var(--soft);
+      margin-top: 4px;
+    }
+
+    .hero-weather {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      flex: 1;
+    }
+
+    .hero-weather .t {
+      font-size: clamp(34px, 3.6vw, 44px);
+      font-weight: 300;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+
+    .hero-weather .c {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .hero-weather .s {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .icon-weather {
+      width: 40px;
+      height: 40px;
+      opacity: 0.85;
+      flex-shrink: 0;
+    }
+
+    .icon-weather svg {
+      width: 100%;
+      height: 100%;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      flex: 1;
+    }
+
+    .metric {
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 5px;
+      padding: 10px 8px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    .metric .v {
+      font-size: clamp(16px, 1.5vw, 20px);
+      font-weight: 400;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+
+    .metric .l {
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+
+    .list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+      justify-content: center;
+    }
+
+    .list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 4px;
+      font-size: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .list li:last-child { border-bottom: 0; }
+
+    .list .k { color: var(--muted); }
+    .list .v { color: var(--text); font-variant-numeric: tabular-nums; }
+
+    .icon-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      flex: 1;
+    }
+
+    .icon-cell {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 5px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 4px;
+      color: rgba(220, 230, 238, 0.7);
+    }
+
+    .icon-cell svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .icon-cell span {
+      font-size: 10px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .icon-cell.on {
+      color: var(--accent);
+      background: rgba(158, 192, 216, 0.08);
+      border-color: rgba(158, 192, 216, 0.16);
+    }
+
+    .media {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 10px;
+      flex: 1;
+    }
+
+    .media .title {
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .media .artist {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .bar {
+      height: 3px;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .bar i {
+      display: block;
+      height: 100%;
+      width: 42%;
+      background: rgba(200, 214, 226, 0.55);
+      border-radius: 99px;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      color: rgba(220, 230, 238, 0.65);
+    }
+
+    .controls svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+
+    .cal-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .cal-body .day {
+      font-size: 36px;
+      font-weight: 300;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+
+    .cal-body .wd {
+      margin-top: 6px;
+      font-size: 13px;
+    }
+
+    .cal-body .ym {
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .sys-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .sys {
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 5px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    .sys .v {
+      font-size: 16px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .sys .l {
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .switcher {
+      position: fixed;
+      left: calc(var(--safe-left) + 18px);
+      bottom: calc(var(--safe-bottom) + 14px);
+      z-index: 20;
+      display: flex;
+      gap: 6px;
+      padding: 4px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .switcher a {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.28);
+      text-indent: -999px;
+      overflow: hidden;
+    }
+
+    .switcher a[aria-current="page"] {
+      background: rgba(255, 255, 255, 0.85);
+    }
+
+    @media (max-width: 980px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto;
+        overflow: auto;
+      }
+      .rail { display: none; }
+      .shell { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+
+  <div class="shell">
+    <aside class="rail" aria-hidden="true">
+      <button class="active" type="button" title="主页">
+        <svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5z"/></svg>
+      </button>
+      <button type="button" title="媒体">
+        <svg viewBox="0 0 24 24"><path d="M9 18V6l11-2v12"/><circle cx="6" cy="18" r="2.5"/><circle cx="17" cy="16" r="2.5"/></svg>
+      </button>
+      <button type="button" title="通知">
+        <svg viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 7 3 7 3 7H3s3 0 3-7"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+      </button>
+      <button type="button" title="电源">
+        <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7 6.5a7 7 0 1 0 10 0"/></svg>
+      </button>
+    </aside>
+
+    <div class="main">
+      <div>
+        <div class="time" id="time">--:--</div>
+      </div>
+
+      <div class="grid">
+        <!-- Weather -->
+        <section class="tile">
+          <h3>Weather</h3>
+          <div class="hero-weather">
+            <div>
+              <div class="t" id="w-temp">--°</div>
+              <div class="c" id="w-cond">—</div>
+              <div class="s" id="w-extra">湿度 — · 风 —</div>
+            </div>
+            <div class="icon-weather" id="w-icon" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <!-- Session -->
+        <section class="tile soft">
+          <h3>Session</h3>
+          <ul class="list">
+            <li><span class="k">桌面</span><span class="v">Hyprland</span></li>
+            <li><span class="k">Shell</span><span class="v">Caelestia</span></li>
+            <li><span class="k">Dock</span><span class="v">Villode</span></li>
+            <li><span class="k">时区</span><span class="v" id="tz">—</span></li>
+          </ul>
+        </section>
+
+        <!-- Sensors-like metrics -->
+        <section class="tile">
+          <h3>Sensors</h3>
+          <div class="metric-grid">
+            <div class="metric">
+              <div class="v" id="m-hum">—</div>
+              <div class="l">Humidity</div>
+            </div>
+            <div class="metric">
+              <div class="v" id="m-wind">—</div>
+              <div class="l">Wind</div>
+            </div>
+            <div class="metric">
+              <div class="v" id="m-rain">—</div>
+              <div class="l">Precip</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Calendar -->
+        <section class="tile soft">
+          <h3>Calendar</h3>
+          <div class="cal-body">
+            <div class="day" id="cal-day">—</div>
+            <div class="wd" id="cal-wd">—</div>
+            <div class="ym" id="cal-ym">—</div>
+          </div>
+        </section>
+
+        <!-- Status tiles -->
+        <section class="tile">
+          <h3>Status</h3>
+          <div class="icon-row">
+            <div class="icon-cell on">
+              <svg viewBox="0 0 24 24"><path d="M5 12.5h14"/><path d="M12 5v14"/><path d="M7.5 8.5c2-3 7-3 9 0"/><path d="M7.5 15.5c2 3 7 3 9 0"/></svg>
+              <span>Network</span>
+            </div>
+            <div class="icon-cell on">
+              <svg viewBox="0 0 24 24"><rect x="3" y="7" width="16" height="10" rx="2"/><path d="M19 10v4h1.5a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1H19z"/><path d="M6 10h8v4H6z"/></svg>
+              <span>Power</span>
+            </div>
+            <div class="icon-cell">
+              <svg viewBox="0 0 24 24"><path d="M12 4a5 5 0 0 1 5 5v2l1.5 3H5.5L7 11V9a5 5 0 0 1 5-5z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg>
+              <span>Notify</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Media faux -->
+        <section class="tile soft">
+          <h3>Now Playing</h3>
+          <div class="media">
+            <div>
+              <div class="title" id="track">Villode Desktop</div>
+              <div class="artist">Local · Wayland</div>
+            </div>
+            <div class="bar"><i></i></div>
+            <div class="controls" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M6 6v12M18 6 10 12l8 6V6z"/></svg>
+              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5z"/></svg>
+              <svg viewBox="0 0 24 24"><path d="M18 6v12M6 6l8 6-8 6V6z"/></svg>
+            </div>
+          </div>
+        </section>
+
+        <!-- System -->
+        <section class="tile" style="grid-column: span 1">
+          <h3>Display</h3>
+          <div class="sys-row">
+            <div class="sys">
+              <div class="v" id="res">—</div>
+              <div class="l">Resolution</div>
+            </div>
+            <div class="sys">
+              <div class="v" id="dpr">—</div>
+              <div class="l">Scale</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Shortcuts info (text only, not action buttons) -->
+        <section class="tile soft" style="grid-column: span 2">
+          <h3>Bindings</h3>
+          <ul class="list">
+            <li><span class="k">启动台</span><span class="v">Super + D</span></li>
+            <li><span class="k">桌面层</span><span class="v">Super + Shift + D</span></li>
+            <li><span class="k">终端</span><span class="v">Super + Return</span></li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <nav class="switcher" aria-label="桌面主题">
+    <a href="weather.html" title="天气">1</a>
+    <a href="dashboard.html" aria-current="page" title="看板">2</a>
+    <a href="minimal.html" title="极简">3</a>
+  </nav>
+
+  <script>
+    (function () {
+      function pad(n) { return n < 10 ? "0" + n : String(n); }
+
+      function tick() {
+        var now = new Date();
+        document.getElementById("time").textContent =
+          pad(now.getHours()) + ":" + pad(now.getMinutes());
+        document.getElementById("cal-day").textContent = String(now.getDate());
+        document.getElementById("cal-wd").textContent = now.toLocaleDateString("zh-CN", { weekday: "long" });
+        document.getElementById("cal-ym").textContent = now.toLocaleDateString("zh-CN", {
+          year: "numeric",
+          month: "long"
+        });
+        try {
+          document.getElementById("tz").textContent =
+            Intl.DateTimeFormat().resolvedOptions().timeZone || "—";
+        } catch (e) {}
+        document.getElementById("res").textContent = window.screen.width + "×" + window.screen.height;
+        document.getElementById("dpr").textContent = String(window.devicePixelRatio || 1);
+        setTimeout(tick, 1000 - (now.getMilliseconds() % 1000));
+      }
+
+      function iconFor(code) {
+        if (code === 0) return '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+        if (code >= 61 && code < 80) return '<svg viewBox="0 0 24 24"><path d="M7 15h9a4 4 0 0 0 .3-8A5.5 5.5 0 0 0 6 8.5 3.5 3.5 0 0 0 7 15z"/><path d="M9 18v2M12.5 17.5v2.5M16 18v2"/></svg>';
+        if (code >= 71 && code < 80) return '<svg viewBox="0 0 24 24"><path d="M7 15h9a4 4 0 0 0 .3-8A5.5 5.5 0 0 0 6 8.5 3.5 3.5 0 0 0 7 15z"/></svg>';
+        return '<svg viewBox="0 0 24 24"><path d="M7 18h9a4 4 0 0 0 .3-8A5.5 5.5 0 0 0 6 11.5 3.5 3.5 0 0 0 7 18z"/></svg>';
+      }
+
+      function cond(code) {
+        var map = { 0: "晴", 1: "晴间多云", 2: "多云", 3: "阴", 45: "雾", 61: "小雨", 63: "中雨", 65: "大雨", 80: "阵雨", 95: "雷雨" };
+        return map[code] || "多云";
+      }
+
+      function loadWeather() {
+        function apply(lat, lon) {
+          var url =
+            "https://api.open-meteo.com/v1/forecast?latitude=" + lat +
+            "&longitude=" + lon +
+            "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&timezone=auto";
+          fetch(url)
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              var c = data.current || {};
+              document.getElementById("w-temp").textContent =
+                (c.temperature_2m != null ? Math.round(c.temperature_2m) : "--") + "°";
+              document.getElementById("w-cond").textContent = cond(c.weather_code);
+              document.getElementById("w-extra").textContent =
+                "湿度 " + (c.relative_humidity_2m != null ? c.relative_humidity_2m + "%" : "—") +
+                " · 风 " + (c.wind_speed_10m != null ? Math.round(c.wind_speed_10m) + " km/h" : "—");
+              document.getElementById("w-icon").innerHTML = iconFor(c.weather_code);
+              document.getElementById("m-hum").textContent =
+                c.relative_humidity_2m != null ? c.relative_humidity_2m + "%" : "—";
+              document.getElementById("m-wind").textContent =
+                c.wind_speed_10m != null ? Math.round(c.wind_speed_10m) : "—";
+              document.getElementById("m-rain").textContent =
+                c.precipitation != null ? c.precipitation + "mm" : "—";
+            })
+            .catch(function () {});
+        }
+
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            function (p) { apply(p.coords.latitude, p.coords.longitude); },
+            function () { apply(39.9042, 116.4074); },
+            { timeout: 5000, maximumAge: 600000 }
+          );
+        } else {
+          apply(39.9042, 116.4074);
+        }
+      }
+
+      tick();
+      loadWeather();
+      setInterval(loadWeather, 15 * 60 * 1000);
+    })();
+  </script>
+</body>
+</html>
