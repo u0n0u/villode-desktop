@@ -335,6 +335,21 @@ def is_trusted_home_uri(uri):
         return False
 
 
+def gstreamer_has_qtdemux():
+    """MP4/MOV playback needs qtdemux from gst-plugins-good."""
+    try:
+        import gi
+
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+
+        if not Gst.is_initialized():
+            Gst.init(None)
+        return Gst.ElementFactory.find("qtdemux") is not None
+    except Exception:
+        return False
+
+
 def validate_config(config):
     mode = config.get("mode")
     source = str(config.get("source") or "").strip()
@@ -355,6 +370,12 @@ def validate_config(config):
             return "循环视频模式只支持 MP4、WEBM、MKV、MOV、M4V 或 AVI 文件。"
         if mode == "html" and suffix not in HTML_SUFFIXES:
             return "本地 HTML 模式只支持 HTML 或 HTM 文件。"
+    if mode == "video" and not gstreamer_has_qtdemux():
+        return (
+            "缺少 GStreamer MP4 解复用插件（qtdemux）。\n"
+            "Arch: sudo pacman -S gst-plugins-good gst-plugins-base\n"
+            "Debian/Ubuntu: sudo apt install gstreamer1.0-plugins-good"
+        )
     return None
 
 
@@ -498,7 +519,7 @@ def build_video_document(config):
 <body>
   <video id="wallpaper" src="{source}" autoplay muted loop playsinline preload="auto"
     disablepictureinpicture disableremoteplayback></video>
-  <div id="error">无法播放当前视频，请打开 Villode Desktop 设置更换文件。</div>
+  <div id="error">无法播放当前视频。若是 MP4，请确认已安装 gst-plugins-good（提供 qtdemux）；也可打开 Villode Desktop 设置更换文件。</div>
   <script>
     const video = document.getElementById("wallpaper");
     const error = document.getElementById("error");

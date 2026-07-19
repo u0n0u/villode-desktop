@@ -56,19 +56,23 @@ PY
 
 install_deps() {
   if need_cmd pacman; then
+    # gst-plugins-good provides qtdemux (MP4/QuickTime container). Without it,
+    # WebKit video wallpapers fail with a black screen / "missing plug-in".
+    # gst-plugins-base supplies the common typefind/playback helpers.
     sudo pacman -S --needed python python-gobject gtk3 \
-      gtk-layer-shell webkit2gtk-4.1 gstreamer gst-libav gst-plugins-bad \
-      gst-plugins-ugly gst-plugin-va
+      gtk-layer-shell webkit2gtk-4.1 gstreamer gst-plugins-base \
+      gst-plugins-good gst-libav gst-plugins-bad gst-plugins-ugly \
+      gst-plugin-va
   elif need_cmd apt; then
     sudo apt update
     sudo apt install -y python3 python3-gi \
       gir1.2-gtk-3.0 gir1.2-gtk-layer-shell-0.1 gir1.2-webkit2-4.1 \
-      gstreamer1.0-libav gstreamer1.0-plugins-good \
-      gstreamer1.0-plugins-bad
+      gstreamer1.0-plugins-base gstreamer1.0-libav \
+      gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
   elif need_cmd dnf; then
     sudo dnf install -y python3 python3-gobject gtk3 \
-      gtk-layer-shell webkit2gtk4.1 gstreamer1-plugins-good \
-      gstreamer1-plugins-bad-free gstreamer1-libav
+      gtk-layer-shell webkit2gtk4.1 gstreamer1-plugins-base \
+      gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-libav
   else
     echo "No supported package manager found. Install GTK3, GtkLayerShell, WebKitGTK 4.1 and GStreamer manually." >&2
     return 1

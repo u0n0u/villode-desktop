@@ -90,17 +90,20 @@ Arch:
 
 ```bash
 sudo pacman -S --needed python python-gobject gtk3 \
-  gtk-layer-shell webkit2gtk-4.1 gstreamer gst-libav gst-plugins-bad \
-  gst-plugins-ugly gst-plugin-va
+  gtk-layer-shell webkit2gtk-4.1 gstreamer gst-plugins-base \
+  gst-plugins-good gst-libav gst-plugins-bad gst-plugins-ugly \
+  gst-plugin-va
 ```
+
+> 视频壁纸依赖 `gst-plugins-good` 中的 `qtdemux` 解析 MP4。若缺此包，WebKit 会黑屏并提示无法播放。
 
 Debian/Ubuntu:
 
 ```bash
 sudo apt install python3 python3-gi \
   gir1.2-gtk-3.0 gir1.2-gtk-layer-shell-0.1 gir1.2-webkit2-4.1 \
-  gstreamer1.0-libav gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad
+  gstreamer1.0-plugins-base gstreamer1.0-libav \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 ```
 
 ## 卸载
