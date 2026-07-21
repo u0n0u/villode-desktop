@@ -460,8 +460,13 @@ def power_user_script():
     }
   };
 
-  document.addEventListener("visibilitychange", function () {
-    if (document.hidden) window.__villodeSetPaused(true);
+  // Background layer-shell WebViews often report document.hidden=true even
+  // when the wallpaper is on-screen. Only pause from host poll / pagehide.
+  document.addEventListener("pagehide", function () {
+    window.__villodeSetPaused(true);
+  });
+  document.addEventListener("pageshow", function () {
+    if (!window.__villodeHostPaused) window.__villodeSetPaused(false);
   });
 })();
 """
@@ -833,15 +838,22 @@ def build_video_document(config):
     video.playsInline = true;
     try {{ video.playbackRate = 1.0; }} catch (e) {{}}
     function tryPlay() {{
-      if (window.__villodeIsPaused) return;
-      video.play().catch(() => {{}});
+      if (window.__villodeHostPaused || window.__villodeIsPaused) return;
+      video.muted = true;
+      const p = video.play();
+      if (p && typeof p.catch === "function") p.catch(() => {{}});
     }}
     tryPlay();
+    video.addEventListener("loadeddata", tryPlay);
+    video.addEventListener("canplay", tryPlay);
     video.addEventListener("error", () => {{ error.style.display = "grid"; }});
+    // Do not pause solely on document.hidden — layer-shell often lies.
     document.addEventListener("visibilitychange", () => {{
-      if (document.hidden) video.pause();
-      else tryPlay();
+      if (!document.hidden && !window.__villodeHostPaused) tryPlay();
     }});
+    setInterval(function () {{
+      if (!window.__villodeHostPaused && video.paused && !video.ended) tryPlay();
+    }}, 2000);
     const _set = window.__villodeSetPaused;
     window.__villodeSetPaused = function (next) {{
       window.__villodeIsPaused = !!next;
@@ -1301,6 +1313,9 @@ def run_desktop(args):
                 pass
 
         def start_power_monitor(self):
+            # Always clear any sticky JS pause shortly after load (layer-shell
+            # WebViews sometimes start with document.hidden=true).
+            GLib.timeout_add(800, lambda: (self.apply_media_paused(False) or False))
             if not as_bool(config.get("power_save", True), True):
                 return
             # Poll Hyprland every 1.5s — cheap vs continuous 1080p decode
@@ -1321,9 +1336,10 @@ def run_desktop(args):
                 return
             flag = "true" if paused else "false"
             js = (
-                "try{if(window.__villodeSetPaused)window.__villodeSetPaused(%s);"
+                "try{window.__villodeHostPaused=%s;"
+                "if(window.__villodeSetPaused)window.__villodeSetPaused(%s);"
                 "window.__villodeIsPaused=%s;}catch(e){}"
-                % (flag, flag)
+                % (flag, flag, flag)
             )
             try:
                 self.webview.run_javascript(js, None, None, None)
