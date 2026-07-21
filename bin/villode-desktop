@@ -51,6 +51,13 @@ DEFAULT_CONFIG = {
     },
     "fit": "cover",
     "background": "#101522",
+    # Power / thermal mitigations for video & HTML wallpapers
+    "power_save": True,
+    "pause_when_occluded": True,
+    "pause_when_locked": True,
+    "pause_when_dpms_off": True,
+    # 0.5–1.0: render surface scale of the WebKit layer (lower = cooler)
+    "playback_scale": 0.85,
 }
 ACTION_COMMANDS = {
     "launcher": ["villode-launcher"],
@@ -180,6 +187,234 @@ def normalize_background(value):
     return DEFAULT_CONFIG["background"]
 
 
+
+
+def clamp_playback_scale(value):
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        scale = DEFAULT_CONFIG["playback_scale"]
+    return max(0.5, min(1.0, scale))
+
+
+def as_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().casefold()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def hyprctl_json(command, timeout=0.8):
+    """Run hyprctl -j <command> and parse JSON. Returns None on failure."""
+    try:
+        completed = subprocess.run(
+            ["hyprctl", "-j", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0 or not (completed.stdout or "").strip():
+        return None
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def hyprland_session_locked():
+    """Best-effort lock detection (hyprlock / session lock)."""
+    # hyprctl clients sometimes includes lock surface; also check processes
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmd = (entry / "cmdline").read_text(errors="ignore")
+            except (FileNotFoundError, OSError, PermissionError):
+                continue
+            if "hyprlock" in cmd or "swaylock" in cmd or "waylock" in cmd:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def hyprland_should_pause_media(config=None):
+    """
+    Return (pause: bool, reason: str).
+    pause when: DPMS off, session lock, or any non-desktop fullscreen /
+    near-fullscreen client on a focused (or any active) monitor.
+    """
+    cfg = config or {}
+    if not as_bool(cfg.get("power_save", True), True):
+        return False, "power_save_off"
+
+    if as_bool(cfg.get("pause_when_locked", True), True) and hyprland_session_locked():
+        return True, "locked"
+
+    monitors = hyprctl_json("monitors")
+    clients = hyprctl_json("clients")
+    if not isinstance(monitors, list) or not monitors:
+        return False, "no_hypr"
+
+    if as_bool(cfg.get("pause_when_dpms_off", True), True):
+        # If every monitor is DPMS-off, pause. If any focused is off, pause.
+        any_on = False
+        focused_off = False
+        for mon in monitors:
+            if not isinstance(mon, dict):
+                continue
+            on = bool(mon.get("dpmsStatus", True))
+            if on:
+                any_on = True
+            if mon.get("focused") and not on:
+                focused_off = True
+        if focused_off or not any_on:
+            return True, "dpms_off"
+
+    if not as_bool(cfg.get("pause_when_occluded", True), True):
+        return False, "ok"
+
+    if not isinstance(clients, list):
+        return False, "ok"
+
+    # Map monitor id -> geometry
+    mon_by_id = {}
+    for mon in monitors:
+        if isinstance(mon, dict) and "id" in mon:
+            mon_by_id[mon["id"]] = mon
+
+    def is_desktop_client(client):
+        cls = str(client.get("class") or "")
+        initial = str(client.get("initialClass") or "")
+        title = str(client.get("title") or "")
+        for token in (cls, initial, title):
+            low = token.casefold()
+            if "villode-desktop" in low or "local.villode.desktop" in low:
+                return True
+        return False
+
+    for client in clients:
+        if not isinstance(client, dict):
+            continue
+        if not client.get("mapped", True) or client.get("hidden"):
+            continue
+        if is_desktop_client(client):
+            continue
+        # Fullscreen flags: 0 none, 1 maximize, 2 fullscreen (varies by version)
+        fs = client.get("fullscreen", 0) or 0
+        fsc = client.get("fullscreenClient", 0) or 0
+        try:
+            fs_i = int(fs)
+        except (TypeError, ValueError):
+            fs_i = 1 if fs else 0
+        try:
+            fsc_i = int(fsc)
+        except (TypeError, ValueError):
+            fsc_i = 1 if fsc else 0
+        if fs_i or fsc_i:
+            return True, "fullscreen"
+
+        # Near-fullscreen tiled window covering most of the monitor
+        size = client.get("size") or [0, 0]
+        mon = mon_by_id.get(client.get("monitor"))
+        if not mon or not isinstance(size, (list, tuple)) or len(size) < 2:
+            continue
+        try:
+            w, h = float(size[0]), float(size[1])
+            mw = float(mon.get("width") or 0)
+            mh = float(mon.get("height") or 0)
+        except (TypeError, ValueError):
+            continue
+        if mw > 0 and mh > 0 and (w * h) >= 0.92 * (mw * mh):
+            return True, "covered"
+
+    return False, "ok"
+
+
+def power_user_script():
+    """Injected into every wallpaper WebView: pause videos/CSS when told."""
+    return r"""
+(function () {
+  if (window.__VILLODE_POWER__) return;
+  window.__VILLODE_POWER__ = true;
+  var paused = false;
+  var saved = [];
+
+  function collectVideos() {
+    return Array.prototype.slice.call(document.querySelectorAll("video"));
+  }
+
+  function freezeCss() {
+    try {
+      if (!document.documentElement.dataset.villodeAnimSaved) {
+        document.documentElement.dataset.villodeAnimSaved = "1";
+        var s = document.createElement("style");
+        s.id = "villode-power-css";
+        s.textContent =
+          "html.villode-power-paused, html.villode-power-paused * {" +
+          "  animation-play-state: paused !important;" +
+          "  transition: none !important;" +
+          "}";
+        (document.head || document.documentElement).appendChild(s);
+      }
+      document.documentElement.classList.add("villode-power-paused");
+    } catch (e) {}
+  }
+
+  function thawCss() {
+    try {
+      document.documentElement.classList.remove("villode-power-paused");
+    } catch (e) {}
+  }
+
+  window.__villodeSetPaused = function (next) {
+    next = !!next;
+    if (next === paused) return;
+    paused = next;
+    if (paused) {
+      saved = collectVideos().map(function (v) {
+        return { el: v, wasPlaying: !v.paused && !v.ended };
+      });
+      saved.forEach(function (item) {
+        try { item.el.pause(); } catch (e) {}
+      });
+      freezeCss();
+    } else {
+      thawCss();
+      saved.forEach(function (item) {
+        if (item.wasPlaying) {
+          try { item.el.play().catch(function () {}); } catch (e) {}
+        }
+      });
+      // Also resume autoplay/loop videos that were added later
+      collectVideos().forEach(function (v) {
+        if (v.hasAttribute("autoplay") || v.loop) {
+          try { v.play().catch(function () {}); } catch (e) {}
+        }
+      });
+      saved = [];
+    }
+  };
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) window.__villodeSetPaused(true);
+  });
+})();
+"""
+
+
 def load_config():
     config = {
         **DEFAULT_CONFIG,
@@ -194,6 +429,15 @@ def load_config():
         for key in ("mode", "source", "fit", "background"):
             if key in saved:
                 config[key] = saved[key]
+        for key in (
+            "power_save",
+            "pause_when_occluded",
+            "pause_when_locked",
+            "pause_when_dpms_off",
+            "playback_scale",
+        ):
+            if key in saved:
+                config[key] = saved[key]
         saved_sources = saved.get("sources")
         if isinstance(saved_sources, dict):
             for mode in MODES:
@@ -203,6 +447,11 @@ def load_config():
         config["mode"] = DEFAULT_CONFIG["mode"]
     if config["fit"] not in FITS:
         config["fit"] = DEFAULT_CONFIG["fit"]
+    config["power_save"] = as_bool(config.get("power_save", True), True)
+    config["pause_when_occluded"] = as_bool(config.get("pause_when_occluded", True), True)
+    config["pause_when_locked"] = as_bool(config.get("pause_when_locked", True), True)
+    config["pause_when_dpms_off"] = as_bool(config.get("pause_when_dpms_off", True), True)
+    config["playback_scale"] = clamp_playback_scale(config.get("playback_scale", 1.0))
     legacy_source = (
         str(saved.get("source") or "") if isinstance(saved, dict) else ""
     )
@@ -237,6 +486,11 @@ def save_config(config):
         "sources": {source_mode: sources[source_mode] for source_mode in MODES},
         "fit": config["fit"],
         "background": normalize_background(config.get("background")),
+        "power_save": as_bool(config.get("power_save", True), True),
+        "pause_when_occluded": as_bool(config.get("pause_when_occluded", True), True),
+        "pause_when_locked": as_bool(config.get("pause_when_locked", True), True),
+        "pause_when_dpms_off": as_bool(config.get("pause_when_dpms_off", True), True),
+        "playback_scale": clamp_playback_scale(config.get("playback_scale", 1.0)),
     }
     CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     CONFIG_DIR.chmod(0o700)
@@ -524,12 +778,25 @@ def build_video_document(config):
     const video = document.getElementById("wallpaper");
     const error = document.getElementById("error");
     video.muted = true;
-    video.play().catch(() => {{}});
+    video.playsInline = true;
+    try {{ video.playbackRate = 1.0; }} catch (e) {{}}
+    function tryPlay() {{
+      if (window.__villodeIsPaused) return;
+      video.play().catch(() => {{}});
+    }}
+    tryPlay();
     video.addEventListener("error", () => {{ error.style.display = "grid"; }});
     document.addEventListener("visibilitychange", () => {{
       if (document.hidden) video.pause();
-      else video.play().catch(() => {{}});
+      else tryPlay();
     }});
+    const _set = window.__villodeSetPaused;
+    window.__villodeSetPaused = function (next) {{
+      window.__villodeIsPaused = !!next;
+      if (typeof _set === "function") _set(next);
+      if (next) video.pause();
+      else tryPlay();
+    }};
   </script>
 </body>
 </html>"""
@@ -543,7 +810,7 @@ def run_configurator():
 
     config = load_config()
     dialog = Gtk.Dialog(title="Villode Desktop 设置")
-    dialog.set_default_size(680, 340)
+    dialog.set_default_size(680, 420)
     dialog.set_resizable(False)
     dialog.add_button("取消", Gtk.ResponseType.CANCEL)
     dialog.add_button("保存并应用", Gtk.ResponseType.APPLY)
@@ -608,10 +875,41 @@ def run_configurator():
     autostart_check.set_active(autostart_enabled())
     grid.attach(autostart_check, 1, 4, 2, 1)
 
+    field_label("省电", 5)
+    power_check = Gtk.CheckButton(label="全屏/锁屏/关屏时自动暂停动态壁纸（降温）")
+    power_check.set_active(as_bool(config.get("power_save", True), True))
+    grid.attach(power_check, 1, 5, 2, 1)
+
+    field_label("渲染缩放", 6)
+    scale_combo = Gtk.ComboBoxText()
+    for value, label in (
+        ("1.0", "100%（最清晰）"),
+        ("0.85", "85%（推荐，更凉快）"),
+        ("0.75", "75%（更省电）"),
+        ("0.6", "60%（最省电）"),
+    ):
+        scale_combo.append(value, label)
+    current_scale = f"{clamp_playback_scale(config.get('playback_scale', 1.0)):.2f}".rstrip("0").rstrip(".")
+    if current_scale not in {"1", "1.0", "0.85", "0.75", "0.6"}:
+        # snap to nearest option
+        options = [1.0, 0.85, 0.75, 0.6]
+        nearest = min(options, key=lambda x: abs(x - float(current_scale or 1)))
+        current_scale = f"{nearest:g}"
+    if current_scale == "1":
+        current_scale = "1.0"
+    scale_combo.set_active_id(current_scale if scale_combo.get_active_id() is None else current_scale)
+    # set_active_id may need exact id
+    scale_combo.set_active_id(
+        {"1": "1.0", "1.0": "1.0", "0.85": "0.85", "0.75": "0.75", "0.6": "0.6"}.get(
+            current_scale, "1.0"
+        )
+    )
+    grid.attach(scale_combo, 1, 6, 2, 1)
+
     hint = Gtk.Label()
     hint.set_xalign(0)
     hint.set_line_wrap(True)
-    grid.attach(hint, 1, 5, 2, 1)
+    grid.attach(hint, 1, 7, 2, 1)
 
     last_mode = mode_combo.get_active_id()
     mode_sources = dict(config["sources"])
@@ -631,10 +929,10 @@ def run_configurator():
             hint.set_text("静态模式由 Caelestia 显示，不会额外创建桌面图层。")
         elif mode == "video":
             source_entry.set_placeholder_text("选择 MP4、WEBM、MKV 等视频")
-            hint.set_text("视频会自动静音并循环播放，推荐 1080p / 24 FPS / H.264。")
+            hint.set_text("视频静音循环；推荐 1080p / 24–30 FPS / H.264。全屏应用时会自动暂停以降温。")
         else:
             source_entry.set_placeholder_text("选择 .html 文件，或输入 https:// 网址")
-            hint.set_text("本地 HTML 可以自己编写；它仍会运行在独立 WebKit 进程中。")
+            hint.set_text("HTML/网页在 WebKit 中运行；含视频时同样会因全屏/锁屏自动暂停。")
 
     def browse_source(_button):
         mode = mode_combo.get_active_id()
@@ -693,6 +991,11 @@ def run_configurator():
             },
             "fit": fit_combo.get_active_id() or "cover",
             "background": normalize_background(background_entry.get_text()),
+            "power_save": power_check.get_active(),
+            "pause_when_occluded": power_check.get_active(),
+            "pause_when_locked": power_check.get_active(),
+            "pause_when_dpms_off": power_check.get_active(),
+            "playback_scale": clamp_playback_scale(scale_combo.get_active_id() or 1.0),
         }
         error = validate_config(candidate)
         if error:
@@ -767,6 +1070,9 @@ def run_desktop(args):
             self.window = None
             self.webview = None
             self.content = None
+            self._paused = False
+            self._pause_reason = "ok"
+            self._power_source = None
 
         def make_webview(self, local_file_access=False, trusted_actions=False):
             manager = WebKit2.UserContentManager()
@@ -782,6 +1088,16 @@ def run_desktop(args):
                     "window.__VILLODE_WEATHER_LOCATION__ = "
                     + json.dumps(weather_location, ensure_ascii=False)
                     + ";",
+                    WebKit2.UserContentInjectedFrames.TOP_FRAME,
+                    WebKit2.UserScriptInjectionTime.START,
+                    None,
+                    None,
+                )
+            )
+            # Pause/resume media from host (occlusion / lock / DPMS)
+            manager.add_script(
+                WebKit2.UserScript.new(
+                    power_user_script(),
                     WebKit2.UserContentInjectedFrames.TOP_FRAME,
                     WebKit2.UserScriptInjectionTime.START,
                     None,
@@ -887,6 +1203,88 @@ def run_desktop(args):
             window.connect("destroy", lambda *_: self.quit())
             window.show_all()
             self.window = window
+            self.apply_playback_scale()
+            self.start_power_monitor()
+
+        def apply_playback_scale(self):
+            """Downscale WebKit surface slightly to cut fill-rate / decode cost."""
+            if not self.window:
+                return
+            scale = clamp_playback_scale(config.get("playback_scale", 1.0))
+            if scale >= 0.999:
+                return
+            try:
+                # CSS zoom on webview content via inject after load is more reliable;
+                # also set GDK scale hint when available.
+                if self.webview is not None:
+                    self.webview.connect(
+                        "load-changed",
+                        self._on_load_apply_scale,
+                    )
+            except Exception:
+                pass
+
+        def _on_load_apply_scale(self, webview, load_event):
+            try:
+                from gi.repository import WebKit2 as WK
+            except Exception:
+                return
+            if int(load_event) != int(WK.LoadEvent.FINISHED):
+                return
+            scale = clamp_playback_scale(config.get("playback_scale", 1.0))
+            if scale >= 0.999:
+                return
+            # zoom_level is multiplicative; 0.85 ~ cooler, still full-screen via layout
+            try:
+                webview.set_zoom_level(scale)
+            except Exception:
+                pass
+            js = (
+                "try{document.documentElement.style.zoom=%s;}catch(e){}"
+                % json.dumps(scale)
+            )
+            try:
+                webview.run_javascript(js, None, None, None)
+            except Exception:
+                pass
+
+        def start_power_monitor(self):
+            if not as_bool(config.get("power_save", True), True):
+                return
+            # Poll Hyprland every 1.5s — cheap vs continuous 1080p decode
+            self._power_source = GLib.timeout_add(1500, self.poll_power_state)
+            # Immediate first check after short delay (clients may not exist yet)
+            GLib.timeout_add(400, self.poll_power_state)
+
+        def poll_power_state(self):
+            pause, reason = hyprland_should_pause_media(config)
+            if pause != self._paused or reason != self._pause_reason:
+                self._paused = pause
+                self._pause_reason = reason
+                self.apply_media_paused(pause)
+            return True  # keep timer
+
+        def apply_media_paused(self, paused):
+            if self.webview is None:
+                return
+            flag = "true" if paused else "false"
+            js = (
+                "try{if(window.__villodeSetPaused)window.__villodeSetPaused(%s);"
+                "window.__villodeIsPaused=%s;}catch(e){}"
+                % (flag, flag)
+            )
+            try:
+                self.webview.run_javascript(js, None, None, None)
+            except Exception:
+                pass
+            # When paused long-term, also drop WebKit process priority via freeze css already
+            try:
+                if paused:
+                    self.window.set_opacity(0.999)  # no-op visual, keeps map
+                else:
+                    self.window.set_opacity(1.0)
+            except Exception:
+                pass
 
         def on_key_press(self, _window, event):
             key = Gdk.keyval_name(event.keyval) or ""
@@ -989,6 +1387,17 @@ def main():
     parser.add_argument("--fit", choices=FITS, help="image/video fit mode")
     parser.add_argument("--background", metavar="#RRGGBB", help="background color")
     parser.add_argument("--escape-quits", action="store_true", help="let Escape close the desktop layer")
+    parser.add_argument(
+        "--playback-scale",
+        type=float,
+        metavar="0.5-1.0",
+        help="WebKit render scale for video/HTML (lower = cooler)",
+    )
+    parser.add_argument(
+        "--no-power-save",
+        action="store_true",
+        help="disable auto-pause when occluded/locked/DPMS off",
+    )
     args = parser.parse_args()
 
     if args.configure:
@@ -1028,7 +1437,7 @@ def main():
         selected = ("video", args.set_video)
     elif args.set_html:
         selected = ("html", args.set_html)
-    if selected or args.fit or args.background:
+    if selected or args.fit or args.background or args.playback_scale is not None or args.no_power_save:
         config = load_config()
         if selected:
             config["mode"], config["source"] = selected
@@ -1036,6 +1445,10 @@ def main():
             config["fit"] = args.fit
         if args.background:
             config["background"] = normalize_background(args.background)
+        if args.playback_scale is not None:
+            config["playback_scale"] = clamp_playback_scale(args.playback_scale)
+        if args.no_power_save:
+            config["power_save"] = False
         error = validate_config(config)
         if error:
             print(error, file=sys.stderr)

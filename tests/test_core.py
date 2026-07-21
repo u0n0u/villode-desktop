@@ -118,5 +118,29 @@ class DesktopCoreTests(unittest.TestCase):
         self.assertEqual(status, 0)
 
 
+
+    def test_playback_scale_clamped(self):
+        self.assertEqual(self.module.clamp_playback_scale(2.0), 1.0)
+        self.assertEqual(self.module.clamp_playback_scale(0.1), 0.5)
+        self.assertAlmostEqual(self.module.clamp_playback_scale(0.85), 0.85)
+
+    def test_power_save_defaults_roundtrip(self):
+        cfg = self.config("video", "/wallpaper.mp4")
+        cfg["power_save"] = False
+        cfg["playback_scale"] = 0.75
+        self.module.save_config(cfg)
+        loaded = self.module.load_config()
+        self.assertFalse(loaded["power_save"])
+        self.assertAlmostEqual(loaded["playback_scale"], 0.75)
+
+    def test_power_save_off_never_pauses(self):
+        pause, reason = self.module.hyprland_should_pause_media({"power_save": False})
+        self.assertFalse(pause)
+        self.assertEqual(reason, "power_save_off")
+
+    def test_power_user_script_defines_hook(self):
+        script = self.module.power_user_script()
+        self.assertIn("__villodeSetPaused", script)
+
 if __name__ == "__main__":
     unittest.main()

@@ -641,10 +641,10 @@
 </head>
 <body>
   <div class="bg" aria-hidden="true"></div>
-  <video class="clear-video active" id="clearVideoA" autoplay muted playsinline preload="auto" aria-hidden="true">
+  <video class="clear-video active" id="clearVideoA" muted playsinline preload="metadata" aria-hidden="true">
     <source src="assets/weather-clear-sky.mp4" type="video/mp4">
   </video>
-  <video class="clear-video" id="clearVideoB" muted playsinline preload="auto" aria-hidden="true">
+  <video class="clear-video" id="clearVideoB" muted playsinline preload="metadata" aria-hidden="true">
     <source src="assets/weather-clear-sky.mp4" type="video/mp4">
   </video>
   <video class="cloud-video" id="cloudVideo" muted loop playsinline preload="metadata" aria-hidden="true">
@@ -714,6 +714,9 @@
 
   <script>
     (function () {
+      var clearSky = null;
+      var mediaPaused = false;
+
       function startSeamlessClearSky() {
         var videos = [
           document.getElementById("clearVideoA"),
@@ -724,11 +727,13 @@
 
         function schedule(video) {
           clearTimeout(timer);
+          if (mediaPaused) return;
           var remaining = Math.max(1, (video.duration || 20.5) - 2.6);
           timer = setTimeout(crossfade, remaining * 1000);
         }
 
         function crossfade() {
+          if (mediaPaused) return;
           var outgoing = videos[activeVideo];
           activeVideo = 1 - activeVideo;
           var incoming = videos[activeVideo];
@@ -743,16 +748,71 @@
           schedule(incoming);
         }
 
+        function pauseClearOnly() {
+          clearTimeout(timer);
+          videos.forEach(function (v) {
+            try { v.pause(); } catch (e) {}
+          });
+        }
+
+        function pauseAll() {
+          mediaPaused = true;
+          pauseClearOnly();
+          var cloud = document.getElementById("cloudVideo");
+          if (cloud) try { cloud.pause(); } catch (e) {}
+        }
+
+        function resumeAll() {
+          mediaPaused = false;
+          var mode = document.body.dataset.weather || "";
+          var cloud = document.getElementById("cloudVideo");
+          if (mode === "cloud" && cloud) {
+            cloud.play().catch(function () {});
+            pauseClearOnly();
+            return;
+          }
+          if (mode !== "clear") {
+            pauseClearOnly();
+            if (cloud) try { cloud.pause(); } catch (e) {}
+            return;
+          }
+          var active = videos[activeVideo];
+          if (active) {
+            active.play().catch(function () {});
+            schedule(active);
+          }
+        }
+
+        clearSky = {
+          pauseAll: pauseAll,
+          resumeAll: resumeAll,
+          pauseClearOnly: pauseClearOnly,
+          videos: videos
+        };
+
         videos[0].addEventListener("loadedmetadata", function () {
+          if (mediaPaused) return;
+          if ((document.body.dataset.weather || "") !== "clear") return;
           videos[0].play().catch(function () {});
           schedule(videos[0]);
         }, { once: true });
         videos[0].addEventListener("ended", crossfade);
         videos[1].addEventListener("ended", crossfade);
-        if (videos[0].readyState >= 1) schedule(videos[0]);
+        // Do not autostart clear dual-decode until weather mode is clear
       }
 
       startSeamlessClearSky();
+
+      // Host injects __villodeSetPaused; wrap it for dual-video clear-sky
+      (function wrapPower() {
+        var prev = window.__villodeSetPaused;
+        window.__villodeSetPaused = function (next) {
+          if (typeof prev === "function") prev(next);
+          if (!clearSky) return;
+          if (next) clearSky.pauseAll();
+          else clearSky.resumeAll();
+        };
+      })();
 
       var PLACES = [{ name: "本地", lat: null, lon: null, local: true }];
 
@@ -914,11 +974,29 @@
         var mode = weatherMode(Number(c.weather_code));
         document.body.dataset.weather = mode;
         var cloudVideo = document.getElementById("cloudVideo");
+        var clearA = document.getElementById("clearVideoA");
+        var clearB = document.getElementById("clearVideoB");
         if (mode === "cloud") {
-          cloudVideo.play().catch(function () {});
-        } else {
+          if (!mediaPaused) cloudVideo.play().catch(function () {});
+          // stop clear-sky dual decode when cloudy
+          if (clearSky && clearSky.pauseClearOnly) clearSky.pauseClearOnly();
+          else {
+            if (clearA) { clearA.pause(); }
+            if (clearB) { clearB.pause(); }
+          }
+        } else if (mode === "clear") {
           cloudVideo.pause();
           cloudVideo.currentTime = 0;
+          if (!mediaPaused && clearSky) clearSky.resumeAll();
+        } else {
+          // rain/storm/etc: static effects, no video decode
+          cloudVideo.pause();
+          cloudVideo.currentTime = 0;
+          if (clearSky && clearSky.pauseClearOnly) clearSky.pauseClearOnly();
+          else {
+            if (clearA) clearA.pause();
+            if (clearB) clearB.pause();
+          }
         }
         var tempLabel =
           (temp < 0 ? "−" : "") +
