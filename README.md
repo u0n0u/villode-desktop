@@ -5,7 +5,8 @@
 ## 功能
 
 - 静态图片委托 Caelestia 统一渲染，不额外创建 Desktop layer
-- 视频自动静音、循环播放，通过 WebKitGTK/GStreamer 解码
+- 视频自动静音、循环播放，通过 **mpvpaper + 硬件解码**（Wallpaper Engine 同款路径，非浏览器）
+- HTML/网址仍走 WebKitGTK（仅自定义页面需要）
 - 自定义本地 HTML 或 `http://`、`https://` 页面，远程页面默认禁止文件、剪贴板和本地快捷动作权限
 - 图形化设置窗口
 - `cover`、`contain`、`stretch` 填充方式
@@ -77,12 +78,12 @@ villode-desktop --quit
 
 ## 性能建议
 
-- 日常使用优先选择静态图片模式（无额外 WebKit 图层，最凉）
-- 视频建议使用 `1920×1080`、24/30 FPS、H.264；避免 4K / 60 FPS
-- HTML 页面复杂度和持续动画会直接影响 CPU/GPU 占用
-- **省电（默认开启）**：检测到全屏窗口、锁屏或显示器 DPMS 关闭时，自动暂停视频与 CSS 动画
-- **渲染缩放（默认 85%）**：降低 WebKit 缩放可明显降温；设置里可调 100% / 85% / 75% / 60%
-- CLI：`villode-desktop --playback-scale 0.75` 或 `--no-power-save`
+- **视频模式 = Wallpaper Engine 视频路径**：`mpvpaper` 背景层 + `hwdec=auto`（VAAPI/NVDEC），**不再用 WebKit 播视频**
+- 遮挡/全屏/最大化时由 mpvpaper 与主机轮询自动暂停（与 WE 类似）
+- 视频建议 `720p–1080p`、24/30 FPS、H.264；避免 4K / 60 FPS
+- HTML 模式仍会开 WebKit（复杂页面更热）；日常动态壁纸请用「循环视频」
+- 静态图片模式最凉（无解码）
+- CLI：`villode-desktop --no-power-save` 可关闭遮挡暂停
 
 ## 依赖
 

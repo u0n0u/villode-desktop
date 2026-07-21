@@ -62,7 +62,7 @@ install_deps() {
     sudo pacman -S --needed python python-gobject gtk3 \
       gtk-layer-shell webkit2gtk-4.1 gstreamer gst-plugins-base \
       gst-plugins-good gst-libav gst-plugins-bad gst-plugins-ugly \
-      gst-plugin-va
+      gst-plugin-va mpv
   elif need_cmd apt; then
     sudo apt update
     sudo apt install -y python3 python3-gi \
@@ -131,6 +131,13 @@ fi
 
 mkdir -p "$(dirname "$INSTALL_BIN")" "$INSTALL_HOME/assets"
 install -m 755 "$SOURCE_BIN" "$INSTALL_BIN"
+# Wallpaper Engine-style native video player (layer-shell + hard decode)
+if [ -x "$SCRIPT_DIR/bin/mpvpaper" ]; then
+  install -m 755 "$SCRIPT_DIR/bin/mpvpaper" "$HOME/.local/bin/mpvpaper"
+fi
+if [ -x "$SCRIPT_DIR/bin/mpvpaper-holder" ]; then
+  install -m 755 "$SCRIPT_DIR/bin/mpvpaper-holder" "$HOME/.local/bin/mpvpaper-holder"
+fi
 install -m 644 "$SOURCE_HOME/index.html" "$INSTALL_HOME/index.html"
 install -m 644 "$SOURCE_HOME/minimal.html" "$INSTALL_HOME/minimal.html"
 install -m 644 "$SOURCE_HOME/weather.html" "$INSTALL_HOME/weather.html"

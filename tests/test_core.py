@@ -330,5 +330,33 @@ class DesktopCoreTests(unittest.TestCase):
     def test_default_playback_scale_is_cooler(self):
         self.assertLessEqual(self.module.DEFAULT_CONFIG["playback_scale"], 0.75)
 
+
+    def test_mpv_fit_options_cover(self):
+        opts = self.module.mpv_fit_options("cover")
+        self.assertIn("panscan=1.0", opts)
+        self.assertIn("keepaspect=yes", self.module.mpv_fit_options("cover"))
+        self.assertIn("keepaspect=no", self.module.mpv_fit_options("stretch"))
+
+    def test_build_mpvpaper_command_shape(self):
+        self.module.BUNDLED_MPVPAPER = Path("/usr/bin/true")
+        self.module.hyprland_monitor_names = lambda: ["eDP-1"]
+        video = Path(self.temporary.name) / "w.mp4"
+        video.write_bytes(b"not-real")
+        cmd, err = self.module.build_mpvpaper_command(
+            {"source": str(video), "fit": "cover"}
+        )
+        self.assertEqual(err, "")
+        self.assertIsNotNone(cmd)
+        self.assertEqual(cmd[0], "/usr/bin/true")
+        self.assertIn("-p", cmd)
+        self.assertIn("background", cmd)
+        joined = " ".join(cmd)
+        self.assertIn("hwdec=auto", joined)
+        self.assertIn("loop-file=inf", joined)
+        self.assertIn("no-audio", joined)
+
+    def test_default_video_backend_is_mpv(self):
+        self.assertEqual(self.module.DEFAULT_CONFIG.get("video_backend"), "mpv")
+
 if __name__ == "__main__":
     unittest.main()

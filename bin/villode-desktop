@@ -27,6 +27,9 @@ CONFIG_LOCK_FILE = CONFIG_DIR / "config.lock"
 PID_FILE = Path.home() / ".cache" / "villode-desktop.pid"
 PID_LOCK_FILE = Path.home() / ".cache" / "villode-desktop.instance.lock"
 OPERATION_LOCK_FILE = Path.home() / ".cache" / "villode-desktop.operation.lock"
+MPV_IPC_SOCK = Path.home() / ".cache" / "villode-desktop-mpv.sock"
+# Bundled mpvpaper next to this script (Wallpaper Engine-style video backend).
+BUNDLED_MPVPAPER = Path(__file__).resolve().parent / "mpvpaper"
 HYPR_DIR = Path.home() / ".config" / "hypr"
 HYPR_MAIN = HYPR_DIR / "hyprland.conf"
 HYPR_INCLUDE_DIR = HYPR_DIR / "conf.d"
@@ -60,10 +63,11 @@ DEFAULT_CONFIG = {
     "pause_cover_threshold": 0.35,
     # On battery, auto-lower scale and cover threshold
     "battery_power_boost": True,
-    # 0.5–1.0: render surface scale of the WebKit layer (lower = cooler)
+    # Kept for battery aggressiveness / HTML only. Video is always full-bleed.
     "playback_scale": 0.75,
-    # Optional CSS max video height (0 = native). 720 reduces a soft paint cap.
     "max_video_height": 0,
+    # Video uses native mpv/mpvpaper (Wallpaper Engine style). "webkit" is legacy.
+    "video_backend": "mpv",
 }
 ACTION_COMMANDS = {
     "launcher": ["villode-launcher"],
@@ -568,6 +572,7 @@ def load_config():
             "pause_cover_threshold",
             "playback_scale",
             "max_video_height",
+            "video_backend",
         ):
             if key in saved:
                 config[key] = saved[key]
@@ -592,6 +597,8 @@ def load_config():
         config.get("playback_scale", DEFAULT_CONFIG["playback_scale"])
     )
     config["max_video_height"] = clamp_max_video_height(config.get("max_video_height", 0))
+    backend = str(config.get("video_backend", "mpv") or "mpv").strip().lower()
+    config["video_backend"] = backend if backend in {"mpv", "webkit"} else "mpv"
     legacy_source = (
         str(saved.get("source") or "") if isinstance(saved, dict) else ""
     )
@@ -638,6 +645,11 @@ def save_config(config):
             config.get("playback_scale", DEFAULT_CONFIG["playback_scale"])
         ),
         "max_video_height": clamp_max_video_height(config.get("max_video_height", 0)),
+        "video_backend": (
+            config.get("video_backend")
+            if str(config.get("video_backend", "mpv")).lower() in {"mpv", "webkit"}
+            else "mpv"
+        ),
     }
     CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     CONFIG_DIR.chmod(0o700)
@@ -901,6 +913,239 @@ def launch_command(command):
     )
 
 
+def resolve_mpvpaper():
+    """Prefer bundled binary, then PATH."""
+    if BUNDLED_MPVPAPER.is_file() and os.access(BUNDLED_MPVPAPER, os.X_OK):
+        return str(BUNDLED_MPVPAPER)
+    for name in ("mpvpaper",):
+        from shutil import which
+        found = which(name)
+        if found:
+            return found
+    return None
+
+
+def hyprland_monitor_names():
+    try:
+        data = hyprctl_json("monitors") or []
+    except Exception:
+        data = []
+    names = []
+    for mon in data:
+        name = (mon or {}).get("name")
+        if name:
+            names.append(str(name))
+    return names
+
+
+def mpv_fit_options(fit):
+    """Map cover/contain/stretch to mpv video options (full-bleed layer)."""
+    fit = (fit or "cover").lower()
+    if fit == "contain":
+        return "keepaspect=yes panscan=0.0 video-unscaled=no"
+    if fit == "stretch":
+        return "keepaspect=no panscan=0.0 video-unscaled=no"
+    # cover (default): fill and crop like object-fit:cover
+    return "keepaspect=yes panscan=1.0 video-unscaled=no"
+
+
+def mpv_ipc_command(command, timeout=1.0):
+    """Send a JSON IPC command to the wallpaper mpv instance."""
+    sock_path = MPV_IPC_SOCK
+    if not sock_path.exists():
+        return None
+    import socket
+
+    payload = json.dumps({"command": command}, ensure_ascii=False) + "\n"
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect(str(sock_path))
+        sock.sendall(payload.encode("utf-8"))
+        chunks = []
+        while True:
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                break
+            if not data:
+                break
+            chunks.append(data)
+            if b"\n" in data:
+                break
+        sock.close()
+        raw = b"".join(chunks).decode("utf-8", errors="replace").strip()
+        if not raw:
+            return None
+        return json.loads(raw.splitlines()[0])
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def mpv_set_paused(paused):
+    """Pause/resume native video wallpaper (Wallpaper Engine style)."""
+    return mpv_ipc_command(["set_property", "pause", bool(paused)])
+
+
+def build_mpvpaper_command(config):
+    """Build mpvpaper argv for WE-style looping muted hard-decoded video."""
+    binary = resolve_mpvpaper()
+    if not binary:
+        return None, "未找到 mpvpaper。请运行 install.sh 安装，或将 mpvpaper 放入 PATH。"
+    source = local_source_path(config["source"])
+    if source is None or not source.is_file():
+        return None, f"视频文件不存在：{config.get('source')}"
+    monitors = hyprland_monitor_names()
+    output = monitors[0] if monitors else "ALL"
+    # Prefer ALL so multi-monitor setups get wallpaper; mpvpaper accepts ALL.
+    if len(monitors) != 1:
+        output = "ALL"
+    MPV_IPC_SOCK.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        MPV_IPC_SOCK.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    fit_opts = mpv_fit_options(config.get("fit"))
+    # Wallpaper Engine video profile:
+    # - muted infinite loop
+    # - hardware decode (vaapi/nvdec)
+    # - libmpv VO (required by mpvpaper)
+    # - no OSD / idle quit
+    # mpvpaper -p -a max: auto-pause when hidden / fullscreen / maximized
+    mpv_opts = " ".join(
+        [
+            "no-audio",
+            "loop-file=inf",
+            "hwdec=auto",
+            "vo=libmpv",
+            "gpu-api=auto",
+            "osd-level=0",
+            "really-quiet",
+            f"input-ipc-server={MPV_IPC_SOCK}",
+            fit_opts,
+        ]
+    )
+    cmd = [
+        binary,
+        "-p",  # auto-pause when wallpaper layer is occluded by compositor
+        "-a",
+        "max",  # also when any window is fullscreen/maximized
+        "-l",
+        "background",
+        "-o",
+        mpv_opts,
+        output,
+        str(source),
+    ]
+    return cmd, ""
+
+
+def run_video_wallpaper(config, args):
+    """Run native mpvpaper video wallpaper (not WebKit).
+
+    Process model matches Wallpaper Engine video wallpapers:
+    lightweight native player on a background layer-shell surface with
+    hardware decode and auto-pause when occluded.
+    """
+    instance_lock = acquire_instance_lock()
+    if instance_lock is None:
+        return 0
+
+    cmd, err = build_mpvpaper_command(config)
+    if cmd is None:
+        release_instance_lock(instance_lock)
+        print(err, file=sys.stderr)
+        return 1
+
+    write_pid(os.getpid())
+    log_path = Path.home() / ".cache" / "villode-desktop-mpvpaper.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(log_path, "ab", buffering=0)
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError as exc:
+        log_fh.close()
+        release_instance_lock(instance_lock)
+        PID_FILE.unlink(missing_ok=True)
+        print(f"无法启动 mpvpaper：{exc}", file=sys.stderr)
+        return 1
+
+    child = proc
+    _paused = False
+    _pause_reason = "ok"
+    stop = {"flag": False}
+
+    def request_stop(signum=None, frame=None):
+        stop["flag"] = True
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+
+    power_on = as_bool(config.get("power_save", True), True)
+    # Wait for IPC sock a moment so first pause/resume works.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not MPV_IPC_SOCK.exists() and not stop["flag"]:
+        if child.poll() is not None:
+            break
+        time.sleep(0.05)
+
+    try:
+        while not stop["flag"]:
+            if child.poll() is not None:
+                # mpvpaper exited
+                break
+            if power_on:
+                pause, reason = hyprland_should_pause_media(config)
+                if pause != _paused or reason != _pause_reason:
+                    _paused = pause
+                    _pause_reason = reason
+                    mpv_set_paused(pause)
+            # 1.5s poll — same cadence as previous WebKit power monitor
+            for _ in range(15):
+                if stop["flag"]:
+                    break
+                if child.poll() is not None:
+                    break
+                time.sleep(0.1)
+    finally:
+        if child.poll() is None:
+            try:
+                # Ask mpv to quit cleanly via IPC first
+                mpv_ipc_command(["quit"])
+            except Exception:
+                pass
+            try:
+                child.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=2.0)
+            except Exception:
+                try:
+                    child.kill()
+                except ProcessLookupError:
+                    pass
+        log_fh.close()
+        try:
+            MPV_IPC_SOCK.unlink()
+        except OSError:
+            pass
+        if read_pid() == os.getpid():
+            PID_FILE.unlink(missing_ok=True)
+        release_instance_lock(instance_lock)
+    return 0 if not stop["flag"] or child.returncode in (0, None, -signal.SIGTERM) else (child.returncode or 1)
+
+
 def build_video_document(config):
     """Full-bleed looping video. Always paints 100% of the layer (cover/contain/fill).
 
@@ -1099,7 +1344,7 @@ def run_configurator():
             hint.set_text("静态模式由 Caelestia 显示，不会额外创建桌面图层。")
         elif mode == "video":
             source_entry.set_placeholder_text("选择 MP4、WEBM、MKV 等视频")
-            hint.set_text("视频静音循环并始终全屏铺满。推荐 720p–1080p H.264；窗口遮挡/锁屏/关屏时会自动暂停以降温。")
+            hint.set_text("视频由 mpv/mpvpaper 原生硬解全屏循环（Wallpaper Engine 同款路径，非浏览器）。推荐 720p–1080p H.264；遮挡/全屏/锁屏时自动暂停。")
         else:
             source_entry.set_placeholder_text("选择 .html 文件，或输入 https:// 网址")
             hint.set_text("HTML/网页在 WebKit 中运行；含视频时同样会因全屏/锁屏自动暂停。")
@@ -1171,6 +1416,7 @@ def run_configurator():
             ),
             "playback_scale": clamp_playback_scale(scale_combo.get_active_id() or 0.75),
             "max_video_height": clamp_max_video_height(config.get("max_video_height", 0)),
+            "video_backend": "mpv",
         }
         error = validate_config(candidate)
         if error:
@@ -1209,6 +1455,11 @@ def run_desktop(args):
             print(message, file=sys.stderr)
             return 1
         return 0
+
+    # Wallpaper Engine-style native video (mpvpaper + VAAPI/NVDEC).
+    # HTML still uses WebKit; only pure video leaves the browser path.
+    if config["mode"] == "video" and str(config.get("video_backend", "mpv")).lower() != "webkit":
+        return run_video_wallpaper(config, args)
 
     instance_lock = acquire_instance_lock()
     if instance_lock is None:
