@@ -902,16 +902,14 @@ def launch_command(command):
 
 
 def build_video_document(config):
+    """Full-bleed looping video. Always paints 100% of the layer (cover/contain/fill).
+
+    Thermal savings come from lower-res source files and host pause injection —
+    not from shrinking the painted surface (which leaves black borders).
+    """
     source = html.escape(normalize_uri(config["source"]), quote=True)
     fit = "fill" if config["fit"] == "stretch" else config["fit"]
     background = normalize_background(config.get("background"))
-    params = effective_power_params(config)
-    scale = params["playback_scale"]
-    max_h = params["max_video_height"]
-    # Soft-cap video paint size via CSS so compositor/WebKit do less work.
-    # (Does not re-encode; still decodes source but composites smaller.)
-    max_h_css = f"max-height: {max_h}px;" if max_h else ""
-    max_w_css = f"max-width: {int(max_h * 16 / 9)}px;" if max_h else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -919,25 +917,18 @@ def build_video_document(config):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     html, body {{ width: 100%; height: 100%; margin: 0; overflow: hidden; background: {background}; }}
-    #wrap {{
-      width: 100%; height: 100%; display: grid; place-items: center;
-      background: {background};
-    }}
     video {{
-      width: 100%; height: 100%; display: block; object-fit: {fit}; background: {background};
-      {max_h_css} {max_w_css}
-      transform: scale({scale}); transform-origin: center center;
-      will-change: transform;
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      display: block; object-fit: {fit}; background: {background};
     }}
     #error {{ display: none; position: fixed; inset: 0; place-items: center; color: #dce7f8;
-      background: {background}; font: 16px system-ui, sans-serif; }}
+      background: {background}; font: 16px system-ui, sans-serif; z-index: 2; }}
   </style>
 </head>
 <body>
-  <div id="wrap">
   <video id="wallpaper" src="{source}" autoplay muted loop playsinline preload="auto"
     disablepictureinpicture disableremoteplayback></video>
-  </div>
   <div id="error">无法播放当前视频。若是 MP4，请确认已安装 gst-plugins-good（提供 qtdemux）；也可打开 Villode Desktop 设置更换文件。</div>
   <script>
     const video = document.getElementById("wallpaper");
@@ -945,10 +936,6 @@ def build_video_document(config):
     video.muted = true;
     video.playsInline = true;
     try {{ video.playbackRate = 1.0; }} catch (e) {{}}
-    // Prefer cheaper decode path when browser supports it
-    try {{
-      if (video.webkitDecodedFrameCount !== undefined) {{ /* webkit */ }}
-    }} catch (e) {{}}
     function tryPlay() {{
       if (window.__villodeHostPaused || window.__villodeIsPaused) return;
       video.muted = true;
@@ -1064,13 +1051,15 @@ def run_configurator():
     batt_check.set_active(as_bool(config.get("battery_power_boost", True), True))
     grid.attach(batt_check, 1, 6, 2, 1)
 
-    field_label("渲染缩放", 7)
+    field_label("清晰度档", 7)
     scale_combo = Gtk.ComboBoxText()
+    # Kept as a preference marker (battery boost still reads playback_scale).
+    # Display is always full-screen; lower values only bias battery aggressiveness.
     for value, label in (
-        ("1.0", "100%（最清晰）"),
-        ("0.85", "85%（较清晰）"),
-        ("0.75", "75%（推荐，更凉快）"),
-        ("0.6", "60%（最省电）"),
+        ("1.0", "高清（全屏）"),
+        ("0.85", "均衡（全屏）"),
+        ("0.75", "推荐省电（全屏）"),
+        ("0.6", "最省电（全屏）"),
     ):
         scale_combo.append(value, label)
     current_scale = f"{clamp_playback_scale(config.get('playback_scale', 0.75)):.2f}".rstrip("0").rstrip(".")
@@ -1110,7 +1099,7 @@ def run_configurator():
             hint.set_text("静态模式由 Caelestia 显示，不会额外创建桌面图层。")
         elif mode == "video":
             source_entry.set_placeholder_text("选择 MP4、WEBM、MKV 等视频")
-            hint.set_text("视频静音循环；推荐 1080p / 24–30 FPS / H.264。全屏应用时会自动暂停以降温。")
+            hint.set_text("视频静音循环并始终全屏铺满。推荐 720p–1080p H.264；窗口遮挡/锁屏/关屏时会自动暂停以降温。")
         else:
             source_entry.set_placeholder_text("选择 .html 文件，或输入 https:// 网址")
             hint.set_text("HTML/网页在 WebKit 中运行；含视频时同样会因全屏/锁屏自动暂停。")
@@ -1403,18 +1392,16 @@ def run_desktop(args):
             self.start_power_monitor()
 
         def apply_playback_scale(self):
-            """Downscale WebKit surface slightly to cut fill-rate / decode cost."""
-            if not self.window:
-                return
-            scale = effective_power_params(config)["playback_scale"]
-            if scale >= 0.999:
+            """Keep wallpaper full-bleed.
+
+            Do NOT apply WebKit zoom / CSS zoom — that shrinks the painted
+            surface and leaves borders. Cooler playback uses lower-res sources
+            (e.g. 720p proxy) and host-side pause, not a smaller window.
+            """
+            if self.webview is None:
                 return
             try:
-                if self.webview is not None:
-                    self.webview.connect(
-                        "load-changed",
-                        self._on_load_apply_scale,
-                    )
+                self.webview.connect("load-changed", self._on_load_apply_scale)
             except Exception:
                 pass
 
@@ -1425,19 +1412,17 @@ def run_desktop(args):
                 return
             if int(load_event) != int(WK.LoadEvent.FINISHED):
                 return
-            scale = effective_power_params(config)["playback_scale"]
-            if scale >= 0.999:
-                return
+            # Always full size
             try:
-                webview.set_zoom_level(scale)
+                webview.set_zoom_level(1.0)
             except Exception:
                 pass
-            js = (
-                "try{document.documentElement.style.zoom=%s;}catch(e){}"
-                % json.dumps(scale)
-            )
             try:
-                webview.run_javascript(js, None, None, None)
+                webview.run_javascript(
+                    "try{document.documentElement.style.zoom='';"
+                    "document.body&&(document.body.style.zoom='');}catch(e){}",
+                    None, None, None,
+                )
             except Exception:
                 pass
 
