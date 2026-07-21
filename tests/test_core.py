@@ -142,5 +142,133 @@ class DesktopCoreTests(unittest.TestCase):
         script = self.module.power_user_script()
         self.assertIn("__villodeSetPaused", script)
 
+    def test_pause_ignores_fullscreen_on_other_workspace(self):
+        """Regression: FlClash maximize on ws3 must not freeze wallpaper on ws4."""
+        mon = {
+            "id": 0,
+            "width": 1920,
+            "height": 1080,
+            "focused": True,
+            "dpmsStatus": True,
+            "activeWorkspace": {"id": 4, "name": "4"},
+            "reserved": [60, 10, 10, 88],
+        }
+        clients = [
+            {
+                "class": "com.follow.clashx",
+                "fullscreen": 1,
+                "fullscreenClient": 1,
+                "size": [1826, 958],
+                "workspace": {"id": 3},
+                "monitor": 0,
+                "mapped": True,
+                "hidden": False,
+            },
+            {
+                "class": "Alacritty",
+                "fullscreen": 0,
+                "size": [906, 958],
+                "workspace": {"id": 4},
+                "monitor": 0,
+                "mapped": True,
+                "hidden": False,
+            },
+        ]
+
+        def fake_json(cmd):
+            if cmd == "monitors":
+                return [mon]
+            if cmd == "clients":
+                return clients
+            return None
+
+        orig = self.module.hyprctl_json
+        self.module.hyprctl_json = fake_json
+        try:
+            pause, reason = self.module.hyprland_should_pause_media({"power_save": True})
+            self.assertFalse(pause)
+            self.assertEqual(reason, "ok")
+        finally:
+            self.module.hyprctl_json = orig
+
+    def test_pause_on_true_fullscreen_active_workspace(self):
+        mon = {
+            "id": 0,
+            "width": 1920,
+            "height": 1080,
+            "focused": True,
+            "dpmsStatus": True,
+            "activeWorkspace": {"id": 2, "name": "2"},
+            "reserved": [0, 0, 0, 0],
+        }
+        clients = [
+            {
+                "class": "mpv",
+                "fullscreen": 2,
+                "fullscreenClient": 2,
+                "size": [1920, 1080],
+                "workspace": {"id": 2},
+                "monitor": 0,
+                "mapped": True,
+                "hidden": False,
+            }
+        ]
+
+        def fake_json(cmd):
+            if cmd == "monitors":
+                return [mon]
+            if cmd == "clients":
+                return clients
+            return None
+
+        orig = self.module.hyprctl_json
+        self.module.hyprctl_json = fake_json
+        try:
+            pause, reason = self.module.hyprland_should_pause_media({"power_save": True})
+            self.assertTrue(pause)
+            self.assertEqual(reason, "fullscreen")
+        finally:
+            self.module.hyprctl_json = orig
+
+    def test_maximize_on_active_workspace_pauses(self):
+        mon = {
+            "id": 0,
+            "width": 1920,
+            "height": 1080,
+            "focused": True,
+            "dpmsStatus": True,
+            "activeWorkspace": {"id": 1, "name": "1"},
+            "reserved": [60, 10, 10, 88],
+        }
+        # 1826x958 fills usable area after reserved insets
+        clients = [
+            {
+                "class": "google-chrome",
+                "fullscreen": 1,
+                "fullscreenClient": 1,
+                "size": [1826, 958],
+                "workspace": {"id": 1},
+                "monitor": 0,
+                "mapped": True,
+                "hidden": False,
+            }
+        ]
+
+        def fake_json(cmd):
+            if cmd == "monitors":
+                return [mon]
+            if cmd == "clients":
+                return clients
+            return None
+
+        orig = self.module.hyprctl_json
+        self.module.hyprctl_json = fake_json
+        try:
+            pause, reason = self.module.hyprland_should_pause_media({"power_save": True})
+            self.assertTrue(pause)
+            self.assertIn(reason, ("maximized", "covered"))
+        finally:
+            self.module.hyprctl_json = orig
+
 if __name__ == "__main__":
     unittest.main()

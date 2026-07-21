@@ -253,8 +253,13 @@ def hyprland_session_locked():
 def hyprland_should_pause_media(config=None):
     """
     Return (pause: bool, reason: str).
-    pause when: DPMS off, session lock, or any non-desktop fullscreen /
-    near-fullscreen client on a focused (or any active) monitor.
+
+    Pause when: DPMS off, session lock, or a non-desktop client that truly
+    occludes the wallpaper on a monitor's *active* workspace.
+
+    Important: Hyprland keeps windows on other workspaces as mapped; we must
+    not pause because of fullscreen apps on a hidden workspace (that made
+    video wallpapers freeze while the desktop was fully visible).
     """
     cfg = config or {}
     if not as_bool(cfg.get("power_save", True), True):
@@ -289,11 +294,18 @@ def hyprland_should_pause_media(config=None):
     if not isinstance(clients, list):
         return False, "ok"
 
-    # Map monitor id -> geometry
+    # Per-monitor active workspace id (wallpaper is only covered there).
     mon_by_id = {}
+    active_ws_by_mon = {}
     for mon in monitors:
-        if isinstance(mon, dict) and "id" in mon:
-            mon_by_id[mon["id"]] = mon
+        if not isinstance(mon, dict) or "id" not in mon:
+            continue
+        mon_by_id[mon["id"]] = mon
+        aw = mon.get("activeWorkspace") or {}
+        try:
+            active_ws_by_mon[mon["id"]] = int(aw.get("id"))
+        except (TypeError, ValueError, AttributeError):
+            active_ws_by_mon[mon["id"]] = None
 
     def is_desktop_client(client):
         cls = str(client.get("class") or "")
@@ -305,6 +317,41 @@ def hyprland_should_pause_media(config=None):
                 return True
         return False
 
+    def client_workspace_id(client):
+        ws = client.get("workspace") or {}
+        if isinstance(ws, dict):
+            try:
+                return int(ws.get("id"))
+            except (TypeError, ValueError):
+                return None
+        try:
+            return int(ws)
+        except (TypeError, ValueError):
+            return None
+
+    def parse_fs(value):
+        # Hyprland: 0 none, 1 maximize, 2 fullscreen (sometimes bool).
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 1 if value else 0
+
+    def usable_area(mon):
+        try:
+            mw = float(mon.get("width") or 0)
+            mh = float(mon.get("height") or 0)
+        except (TypeError, ValueError):
+            return 0.0, 0.0
+        reserved = mon.get("reserved") or [0, 0, 0, 0]
+        # reserved: [top, right, bottom, left] in recent hyprctl
+        try:
+            top, right, bottom, left = [float(x) for x in reserved[:4]]
+        except (TypeError, ValueError):
+            top = right = bottom = left = 0.0
+        uw = max(0.0, mw - left - right)
+        uh = max(0.0, mh - top - bottom)
+        return uw, uh
+
     for client in clients:
         if not isinstance(client, dict):
             continue
@@ -312,33 +359,38 @@ def hyprland_should_pause_media(config=None):
             continue
         if is_desktop_client(client):
             continue
-        # Fullscreen flags: 0 none, 1 maximize, 2 fullscreen (varies by version)
-        fs = client.get("fullscreen", 0) or 0
-        fsc = client.get("fullscreenClient", 0) or 0
-        try:
-            fs_i = int(fs)
-        except (TypeError, ValueError):
-            fs_i = 1 if fs else 0
-        try:
-            fsc_i = int(fsc)
-        except (TypeError, ValueError):
-            fsc_i = 1 if fsc else 0
-        if fs_i or fsc_i:
+
+        mon_id = client.get("monitor")
+        mon = mon_by_id.get(mon_id)
+        if not mon:
+            continue
+
+        # Only windows on this monitor's *visible* workspace cover wallpaper.
+        active_ws = active_ws_by_mon.get(mon_id)
+        c_ws = client_workspace_id(client)
+        if active_ws is not None and c_ws is not None and c_ws != active_ws:
+            continue
+
+        fs_i = parse_fs(client.get("fullscreen", 0))
+        fsc_i = parse_fs(client.get("fullscreenClient", 0))
+        # True exclusive fullscreen only (not mere maximize=1).
+        if fs_i >= 2 or fsc_i >= 2:
             return True, "fullscreen"
 
-        # Near-fullscreen tiled window covering most of the monitor
         size = client.get("size") or [0, 0]
-        mon = mon_by_id.get(client.get("monitor"))
-        if not mon or not isinstance(size, (list, tuple)) or len(size) < 2:
+        if not isinstance(size, (list, tuple)) or len(size) < 2:
             continue
         try:
             w, h = float(size[0]), float(size[1])
-            mw = float(mon.get("width") or 0)
-            mh = float(mon.get("height") or 0)
         except (TypeError, ValueError):
             continue
-        if mw > 0 and mh > 0 and (w * h) >= 0.92 * (mw * mh):
-            return True, "covered"
+        uw, uh = usable_area(mon)
+        if uw <= 0 or uh <= 0:
+            continue
+        # Maximize (fs==1) or a large tiled window: only pause if it fills most
+        # of the *usable* area (gaps/panel reserved do not count as free desktop).
+        if (w * h) >= 0.92 * (uw * uh):
+            return True, "covered" if fs_i < 1 else "maximized"
 
     return False, "ok"
 
