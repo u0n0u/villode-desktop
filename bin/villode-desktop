@@ -56,8 +56,14 @@ DEFAULT_CONFIG = {
     "pause_when_occluded": True,
     "pause_when_locked": True,
     "pause_when_dpms_off": True,
+    # Pause when visible non-desktop clients cover this fraction of usable area
+    "pause_cover_threshold": 0.35,
+    # On battery, auto-lower scale and cover threshold
+    "battery_power_boost": True,
     # 0.5–1.0: render surface scale of the WebKit layer (lower = cooler)
-    "playback_scale": 0.85,
+    "playback_scale": 0.75,
+    # Optional CSS max video height (0 = native). 720 reduces a soft paint cap.
+    "max_video_height": 0,
 }
 ACTION_COMMANDS = {
     "launcher": ["villode-launcher"],
@@ -195,6 +201,62 @@ def clamp_playback_scale(value):
     except (TypeError, ValueError):
         scale = DEFAULT_CONFIG["playback_scale"]
     return max(0.5, min(1.0, scale))
+
+
+def clamp_cover_threshold(value):
+    try:
+        t = float(value)
+    except (TypeError, ValueError):
+        t = DEFAULT_CONFIG["pause_cover_threshold"]
+    return max(0.15, min(0.95, t))
+
+
+def clamp_max_video_height(value):
+    try:
+        h = int(value)
+    except (TypeError, ValueError):
+        h = 0
+    if h <= 0:
+        return 0
+    return max(360, min(2160, h))
+
+
+def on_battery():
+    """True when a BAT* supply reports Discharging (AC unplugged)."""
+    try:
+        base = Path("/sys/class/power_supply")
+        if not base.is_dir():
+            return False
+        for entry in base.iterdir():
+            name = entry.name
+            if not name.startswith("BAT"):
+                continue
+            status = (entry / "status").read_text(encoding="utf-8").strip()
+            if status == "Discharging":
+                return True
+        return False
+    except OSError:
+        return False
+
+
+def effective_power_params(config=None):
+    """Scale / cover threshold after optional battery boost."""
+    cfg = config or {}
+    scale = clamp_playback_scale(cfg.get("playback_scale", DEFAULT_CONFIG["playback_scale"]))
+    thr = clamp_cover_threshold(
+        cfg.get("pause_cover_threshold", DEFAULT_CONFIG["pause_cover_threshold"])
+    )
+    batt = False
+    if as_bool(cfg.get("battery_power_boost", True), True) and on_battery():
+        batt = True
+        scale = min(scale, 0.65)
+        thr = min(thr, 0.25)
+    return {
+        "playback_scale": scale,
+        "pause_cover_threshold": thr,
+        "on_battery": batt,
+        "max_video_height": clamp_max_video_height(cfg.get("max_video_height", 0)),
+    }
 
 
 def as_bool(value, default=True):
@@ -387,10 +449,21 @@ def hyprland_should_pause_media(config=None):
         uw, uh = usable_area(mon)
         if uw <= 0 or uh <= 0:
             continue
-        # Maximize (fs==1) or a large tiled window: only pause if it fills most
-        # of the *usable* area (gaps/panel reserved do not count as free desktop).
-        if (w * h) >= 0.92 * (uw * uh):
-            return True, "covered" if fs_i < 1 else "maximized"
+        area = w * h
+        usable = uw * uh
+        # True exclusive fullscreen already handled. Maximize always pauses.
+        if fs_i >= 1 or fsc_i >= 1:
+            if area >= 0.55 * usable:
+                return True, "maximized"
+        # Any large enough window on the visible workspace hides wallpaper —
+        # keep decoding only when most of the desktop is still visible.
+        thr = clamp_cover_threshold(
+            cfg.get("pause_cover_threshold", DEFAULT_CONFIG["pause_cover_threshold"])
+        )
+        if as_bool(cfg.get("battery_power_boost", True), True) and on_battery():
+            thr = min(thr, 0.25)
+        if area >= thr * usable:
+            return True, "covered"
 
     return False, "ok"
 
@@ -491,7 +564,10 @@ def load_config():
             "pause_when_occluded",
             "pause_when_locked",
             "pause_when_dpms_off",
+            "battery_power_boost",
+            "pause_cover_threshold",
             "playback_scale",
+            "max_video_height",
         ):
             if key in saved:
                 config[key] = saved[key]
@@ -508,7 +584,14 @@ def load_config():
     config["pause_when_occluded"] = as_bool(config.get("pause_when_occluded", True), True)
     config["pause_when_locked"] = as_bool(config.get("pause_when_locked", True), True)
     config["pause_when_dpms_off"] = as_bool(config.get("pause_when_dpms_off", True), True)
-    config["playback_scale"] = clamp_playback_scale(config.get("playback_scale", 1.0))
+    config["battery_power_boost"] = as_bool(config.get("battery_power_boost", True), True)
+    config["pause_cover_threshold"] = clamp_cover_threshold(
+        config.get("pause_cover_threshold", DEFAULT_CONFIG["pause_cover_threshold"])
+    )
+    config["playback_scale"] = clamp_playback_scale(
+        config.get("playback_scale", DEFAULT_CONFIG["playback_scale"])
+    )
+    config["max_video_height"] = clamp_max_video_height(config.get("max_video_height", 0))
     legacy_source = (
         str(saved.get("source") or "") if isinstance(saved, dict) else ""
     )
@@ -547,7 +630,14 @@ def save_config(config):
         "pause_when_occluded": as_bool(config.get("pause_when_occluded", True), True),
         "pause_when_locked": as_bool(config.get("pause_when_locked", True), True),
         "pause_when_dpms_off": as_bool(config.get("pause_when_dpms_off", True), True),
-        "playback_scale": clamp_playback_scale(config.get("playback_scale", 1.0)),
+        "battery_power_boost": as_bool(config.get("battery_power_boost", True), True),
+        "pause_cover_threshold": clamp_cover_threshold(
+            config.get("pause_cover_threshold", DEFAULT_CONFIG["pause_cover_threshold"])
+        ),
+        "playback_scale": clamp_playback_scale(
+            config.get("playback_scale", DEFAULT_CONFIG["playback_scale"])
+        ),
+        "max_video_height": clamp_max_video_height(config.get("max_video_height", 0)),
     }
     CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     CONFIG_DIR.chmod(0o700)
@@ -815,6 +905,13 @@ def build_video_document(config):
     source = html.escape(normalize_uri(config["source"]), quote=True)
     fit = "fill" if config["fit"] == "stretch" else config["fit"]
     background = normalize_background(config.get("background"))
+    params = effective_power_params(config)
+    scale = params["playback_scale"]
+    max_h = params["max_video_height"]
+    # Soft-cap video paint size via CSS so compositor/WebKit do less work.
+    # (Does not re-encode; still decodes source but composites smaller.)
+    max_h_css = f"max-height: {max_h}px;" if max_h else ""
+    max_w_css = f"max-width: {int(max_h * 16 / 9)}px;" if max_h else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -822,14 +919,25 @@ def build_video_document(config):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     html, body {{ width: 100%; height: 100%; margin: 0; overflow: hidden; background: {background}; }}
-    video {{ width: 100%; height: 100%; display: block; object-fit: {fit}; background: {background}; }}
+    #wrap {{
+      width: 100%; height: 100%; display: grid; place-items: center;
+      background: {background};
+    }}
+    video {{
+      width: 100%; height: 100%; display: block; object-fit: {fit}; background: {background};
+      {max_h_css} {max_w_css}
+      transform: scale({scale}); transform-origin: center center;
+      will-change: transform;
+    }}
     #error {{ display: none; position: fixed; inset: 0; place-items: center; color: #dce7f8;
       background: {background}; font: 16px system-ui, sans-serif; }}
   </style>
 </head>
 <body>
+  <div id="wrap">
   <video id="wallpaper" src="{source}" autoplay muted loop playsinline preload="auto"
     disablepictureinpicture disableremoteplayback></video>
+  </div>
   <div id="error">无法播放当前视频。若是 MP4，请确认已安装 gst-plugins-good（提供 qtdemux）；也可打开 Villode Desktop 设置更换文件。</div>
   <script>
     const video = document.getElementById("wallpaper");
@@ -837,6 +945,10 @@ def build_video_document(config):
     video.muted = true;
     video.playsInline = true;
     try {{ video.playbackRate = 1.0; }} catch (e) {{}}
+    // Prefer cheaper decode path when browser supports it
+    try {{
+      if (video.webkitDecodedFrameCount !== undefined) {{ /* webkit */ }}
+    }} catch (e) {{}}
     function tryPlay() {{
       if (window.__villodeHostPaused || window.__villodeIsPaused) return;
       video.muted = true;
@@ -853,7 +965,7 @@ def build_video_document(config):
     }});
     setInterval(function () {{
       if (!window.__villodeHostPaused && video.paused && !video.ended) tryPlay();
-    }}, 2000);
+    }}, 2500);
     const _set = window.__villodeSetPaused;
     window.__villodeSetPaused = function (next) {{
       window.__villodeIsPaused = !!next;
@@ -866,6 +978,7 @@ def build_video_document(config):
 </html>"""
 
 
+
 def run_configurator():
     import gi
 
@@ -874,7 +987,7 @@ def run_configurator():
 
     config = load_config()
     dialog = Gtk.Dialog(title="Villode Desktop 设置")
-    dialog.set_default_size(680, 420)
+    dialog.set_default_size(680, 480)
     dialog.set_resizable(False)
     dialog.add_button("取消", Gtk.ResponseType.CANCEL)
     dialog.add_button("保存并应用", Gtk.ResponseType.APPLY)
@@ -940,40 +1053,44 @@ def run_configurator():
     grid.attach(autostart_check, 1, 4, 2, 1)
 
     field_label("省电", 5)
-    power_check = Gtk.CheckButton(label="全屏/锁屏/关屏时自动暂停动态壁纸（降温）")
+    power_check = Gtk.CheckButton(
+        label="窗口遮挡/锁屏/关屏时自动暂停动态壁纸（降温）"
+    )
     power_check.set_active(as_bool(config.get("power_save", True), True))
     grid.attach(power_check, 1, 5, 2, 1)
 
-    field_label("渲染缩放", 6)
+    field_label("电池增强", 6)
+    batt_check = Gtk.CheckButton(label="使用电池时更激进省电（更低缩放、更早暂停）")
+    batt_check.set_active(as_bool(config.get("battery_power_boost", True), True))
+    grid.attach(batt_check, 1, 6, 2, 1)
+
+    field_label("渲染缩放", 7)
     scale_combo = Gtk.ComboBoxText()
     for value, label in (
         ("1.0", "100%（最清晰）"),
-        ("0.85", "85%（推荐，更凉快）"),
-        ("0.75", "75%（更省电）"),
+        ("0.85", "85%（较清晰）"),
+        ("0.75", "75%（推荐，更凉快）"),
         ("0.6", "60%（最省电）"),
     ):
         scale_combo.append(value, label)
-    current_scale = f"{clamp_playback_scale(config.get('playback_scale', 1.0)):.2f}".rstrip("0").rstrip(".")
+    current_scale = f"{clamp_playback_scale(config.get('playback_scale', 0.75)):.2f}".rstrip("0").rstrip(".")
     if current_scale not in {"1", "1.0", "0.85", "0.75", "0.6"}:
-        # snap to nearest option
         options = [1.0, 0.85, 0.75, 0.6]
-        nearest = min(options, key=lambda x: abs(x - float(current_scale or 1)))
+        nearest = min(options, key=lambda x: abs(x - float(current_scale or 0.75)))
         current_scale = f"{nearest:g}"
     if current_scale == "1":
         current_scale = "1.0"
-    scale_combo.set_active_id(current_scale if scale_combo.get_active_id() is None else current_scale)
-    # set_active_id may need exact id
     scale_combo.set_active_id(
         {"1": "1.0", "1.0": "1.0", "0.85": "0.85", "0.75": "0.75", "0.6": "0.6"}.get(
-            current_scale, "1.0"
+            current_scale, "0.75"
         )
     )
-    grid.attach(scale_combo, 1, 6, 2, 1)
+    grid.attach(scale_combo, 1, 7, 2, 1)
 
     hint = Gtk.Label()
     hint.set_xalign(0)
     hint.set_line_wrap(True)
-    grid.attach(hint, 1, 7, 2, 1)
+    grid.attach(hint, 1, 8, 2, 1)
 
     last_mode = mode_combo.get_active_id()
     mode_sources = dict(config["sources"])
@@ -1059,7 +1176,12 @@ def run_configurator():
             "pause_when_occluded": power_check.get_active(),
             "pause_when_locked": power_check.get_active(),
             "pause_when_dpms_off": power_check.get_active(),
-            "playback_scale": clamp_playback_scale(scale_combo.get_active_id() or 1.0),
+            "battery_power_boost": batt_check.get_active(),
+            "pause_cover_threshold": clamp_cover_threshold(
+                config.get("pause_cover_threshold", DEFAULT_CONFIG["pause_cover_threshold"])
+            ),
+            "playback_scale": clamp_playback_scale(scale_combo.get_active_id() or 0.75),
+            "max_video_height": clamp_max_video_height(config.get("max_video_height", 0)),
         }
         error = validate_config(candidate)
         if error:
@@ -1173,7 +1295,16 @@ def run_desktop(args):
             self.remote_html = config["mode"] == "html" and is_web_uri(config["source"])
             settings = webview.get_settings()
             set_if_supported(settings, "enable-developer-extras", False)
-            set_if_supported(settings, "enable-smooth-scrolling", True)
+            # Wallpaper does not need smooth scroll / page cache chrome.
+            set_if_supported(settings, "enable-smooth-scrolling", False)
+            set_if_supported(settings, "enable-page-cache", False)
+            set_if_supported(settings, "enable-dns-prefetching", False)
+            set_if_supported(settings, "enable-html5-database", False)
+            set_if_supported(settings, "enable-html5-local-storage", False)
+            set_if_supported(settings, "enable-offline-web-application-cache", False)
+            set_if_supported(settings, "enable-hyperlink-auditing", False)
+            set_if_supported(settings, "enable-media-stream", False)
+            set_if_supported(settings, "enable-webrtc", False)
             set_if_supported(
                 settings, "allow-file-access-from-file-urls", bool(local_file_access)
             )
@@ -1182,6 +1313,7 @@ def run_desktop(args):
             set_if_supported(settings, "allow-modal-dialogs", False)
             set_if_supported(settings, "media-playback-requires-user-gesture", False)
             try:
+                # Prefer GPU decode/composite when available (cooler than software).
                 settings.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.ALWAYS)
             except Exception:
                 pass
@@ -1274,12 +1406,10 @@ def run_desktop(args):
             """Downscale WebKit surface slightly to cut fill-rate / decode cost."""
             if not self.window:
                 return
-            scale = clamp_playback_scale(config.get("playback_scale", 1.0))
+            scale = effective_power_params(config)["playback_scale"]
             if scale >= 0.999:
                 return
             try:
-                # CSS zoom on webview content via inject after load is more reliable;
-                # also set GDK scale hint when available.
                 if self.webview is not None:
                     self.webview.connect(
                         "load-changed",
@@ -1295,10 +1425,9 @@ def run_desktop(args):
                 return
             if int(load_event) != int(WK.LoadEvent.FINISHED):
                 return
-            scale = clamp_playback_scale(config.get("playback_scale", 1.0))
+            scale = effective_power_params(config)["playback_scale"]
             if scale >= 0.999:
                 return
-            # zoom_level is multiplicative; 0.85 ~ cooler, still full-screen via layout
             try:
                 webview.set_zoom_level(scale)
             except Exception:

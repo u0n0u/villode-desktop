@@ -165,9 +165,10 @@ class DesktopCoreTests(unittest.TestCase):
                 "hidden": False,
             },
             {
+                # Small floating-ish window on active workspace — must not trip cover.
                 "class": "Alacritty",
                 "fullscreen": 0,
-                "size": [906, 958],
+                "size": [400, 300],
                 "workspace": {"id": 4},
                 "monitor": 0,
                 "mapped": True,
@@ -185,8 +186,10 @@ class DesktopCoreTests(unittest.TestCase):
         orig = self.module.hyprctl_json
         self.module.hyprctl_json = fake_json
         try:
-            pause, reason = self.module.hyprland_should_pause_media({"power_save": True})
-            self.assertFalse(pause)
+            pause, reason = self.module.hyprland_should_pause_media(
+                {"power_save": True, "pause_cover_threshold": 0.35, "battery_power_boost": False}
+            )
+            self.assertFalse(pause, reason)
             self.assertEqual(reason, "ok")
         finally:
             self.module.hyprctl_json = orig
@@ -269,6 +272,63 @@ class DesktopCoreTests(unittest.TestCase):
             self.assertIn(reason, ("maximized", "covered"))
         finally:
             self.module.hyprctl_json = orig
+
+
+    def test_partial_cover_pauses_at_threshold(self):
+        mon = {
+            "id": 0,
+            "width": 1920,
+            "height": 1080,
+            "focused": True,
+            "dpmsStatus": True,
+            "activeWorkspace": {"id": 1, "name": "1"},
+            "reserved": [60, 10, 10, 88],
+        }
+        # ~half usable area
+        clients = [
+            {
+                "class": "Alacritty",
+                "fullscreen": 0,
+                "size": [960, 958],
+                "workspace": {"id": 1},
+                "monitor": 0,
+                "mapped": True,
+                "hidden": False,
+            }
+        ]
+
+        def fake_json(cmd):
+            if cmd == "monitors":
+                return [mon]
+            if cmd == "clients":
+                return clients
+            return None
+
+        orig = self.module.hyprctl_json
+        self.module.hyprctl_json = fake_json
+        try:
+            pause, reason = self.module.hyprland_should_pause_media(
+                {"power_save": True, "pause_cover_threshold": 0.35, "battery_power_boost": False}
+            )
+            self.assertTrue(pause)
+            self.assertEqual(reason, "covered")
+            pause2, _ = self.module.hyprland_should_pause_media(
+                {"power_save": True, "pause_cover_threshold": 0.9, "battery_power_boost": False}
+            )
+            self.assertFalse(pause2)
+        finally:
+            self.module.hyprctl_json = orig
+
+    def test_effective_power_params_clamp(self):
+        p = self.module.effective_power_params(
+            {"playback_scale": 0.9, "pause_cover_threshold": 0.4, "battery_power_boost": False}
+        )
+        self.assertAlmostEqual(p["playback_scale"], 0.9)
+        self.assertAlmostEqual(p["pause_cover_threshold"], 0.4)
+        self.assertFalse(p["on_battery"])
+
+    def test_default_playback_scale_is_cooler(self):
+        self.assertLessEqual(self.module.DEFAULT_CONFIG["playback_scale"], 0.75)
 
 if __name__ == "__main__":
     unittest.main()
